@@ -1214,7 +1214,6 @@ QuicEncoder.prototype.quic_decode = function(buf, stride)
         case Constants.QUIC_IMAGE_TYPE_RGB16:
             console.log("quic: unsupported output format\n");
             return false;
-            break;
         case Constants.QUIC_IMAGE_TYPE_RGBA:
             this.channels[0].correlate_row.zero = 0;
             this.channels[1].correlate_row.zero = 0;
@@ -1243,7 +1242,6 @@ QuicEncoder.prototype.quic_decode = function(buf, stride)
         case Constants.QUIC_IMAGE_TYPE_GRAY:
             console.log("quic: unsupported output format\n");
             return false;
-            break;
 
         case Constants.QUIC_IMAGE_TYPE_INVALID:
         default:
