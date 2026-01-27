@@ -41,7 +41,7 @@ function SpicePlaybackConn()
 SpicePlaybackConn.prototype = Object.create(SpiceConn.prototype);
 SpicePlaybackConn.prototype.process_channel_message = function(msg)
 {
-    if (!!!window.MediaSource)
+    if (!window.MediaSource)
     {
         this.log_err('MediaSource API is not available');
         return false;
