@@ -41,7 +41,7 @@ import {
   SpiceMsgcAckSync,
   SpiceMsgNotify,
 } from './spicemsg.js';
-import { DEBUG } from './utils.js';
+import { DEBUG, hexdump_buffer } from './utils.js';
 import * as Webm from './webm.js';
 import { rsa_encrypt } from './ticket.js';
 
