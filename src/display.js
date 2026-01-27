@@ -1568,7 +1568,7 @@ function handle_append_video_buffer_done(e)
 
     /* Modern browsers try not to auto play video. */
     if (this.stream.video.paused && this.stream.video.readyState >= 2)
-        var promise = this.stream.video.play();
+        this.stream.video.play();
 
     if (Utils.STREAM_DEBUG > 1)
         console.log(stream.video.currentTime + ":id " +  stream.id + " updateend " + Utils.dump_media_element(stream.video));

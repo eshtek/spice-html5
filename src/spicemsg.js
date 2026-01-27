@@ -264,7 +264,6 @@ SpiceMiniData.prototype =
     from_buffer: function(a, at)
     {
         at = at || 0;
-        var i;
         var dv = new DataView(a);
         this.type = dv.getUint16(at, true); at += 2;
         this.size = dv.getUint32(at, true); at += 4;

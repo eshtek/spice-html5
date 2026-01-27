@@ -113,7 +113,6 @@ simulate_cursor: function (spicecursor, cursor, screen, pngstr)
 
 handle_sim_mousemove: function(e)
 {
-    var retval;
     var f = SpiceSimulateCursor.duplicate_mouse_event(e, this.spice_screen);
     return this.spice_screen.dispatchEvent(f);
 },
