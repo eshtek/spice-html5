@@ -522,6 +522,14 @@ SpiceConn.prototype =
     handle_timeout: function()
     {
         var e = new Error("Connection timed out.");
+        /* Actually shut the connection down.  Reporting alone left the
+           socket open, and a slow handshake could still complete after
+           the application had already given up on it — a zombie session
+           with its own inputs and display channels.  Cleanup before
+           report so the socket dies even if report_error throws; the
+           error state also keeps the close event from double-reporting. */
+        this.cleanup();
+        this.state = "error";
         this.report_error(e);
     },
 }
