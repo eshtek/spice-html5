@@ -41,20 +41,13 @@ function resize_helper(sc)
 
     var h = window.innerHeight - 20;
 
-    /* Screen height based on debug console visibility  */
-    if (m != null)
+    /* Screen height based on message console visibility.  A hidden console
+       occupies no space, so only a visible one reduces the screen; its
+       offsetHeight already includes the client area, so subtract it once. */
+    if (m != null &&
+        window.getComputedStyle(m).getPropertyValue("display") != 'none')
     {
-        if (window.getComputedStyle(m).getPropertyValue("display") == 'none')
-        {
-            /* Get console height from spice.css .spice-message */
-            var mh = parseInt(window.getComputedStyle(m).getPropertyValue("height"), 10);
-            h = h - mh;
-        }
-        else
-        {
-            /* Show both div elements - spice-area and message-div */
-            h = h - m.offsetHeight - m.clientHeight;
-        }
+        h = h - m.offsetHeight;
     }
 
 
@@ -75,7 +68,11 @@ function handle_resize(e)
 {
     var sc = window.spice_connection;
 
-    if (sc && sc.spice_resize_timer)
+    /* The listener can outlive the connection it was registered for. */
+    if (!sc)
+        return;
+
+    if (sc.spice_resize_timer)
     {
         window.clearTimeout(sc.spice_resize_timer);
         sc.spice_resize_timer = undefined;
