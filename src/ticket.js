@@ -181,7 +181,10 @@ function create_rsa_from_mb(mb, at)
         return null;
 
     at = lenblock[0];
-    if (u8[at] != 0 && u8[at + 1] != 0x30)
+    /* Or, not and: the bit string is malformed if EITHER the unused-bits
+       byte is nonzero or the sequence tag is missing.  Requiring both to
+       be wrong let malformed keys through to be garbage-parsed. */
+    if (u8[at] != 0 || u8[at + 1] != 0x30)
     {
         console.log("Error: unexpected values in bit string.");
         return null;
