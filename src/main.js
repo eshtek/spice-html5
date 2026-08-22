@@ -335,6 +335,10 @@ SpiceMainConn.prototype.stop = function(msg)
         this.playback = undefined;
     }
 
+    for (var p = 0; p < this.ports.length; p++)
+        this.ports[p].cleanup();
+    this.ports = [];
+
     if (this.display)
     {
         this.display.cleanup();
