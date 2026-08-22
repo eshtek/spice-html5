@@ -63,7 +63,9 @@ SpiceDataView.prototype = {
             high = 2;
         }
 
-        return (this.getUint16(byteOffset + high, littleEndian) << 16) |
+        /* Multiply, not shift: << 16 yields a negative number for values
+           with the top bit set. */
+        return (this.getUint16(byteOffset + high, littleEndian) * 0x10000) +
                 this.getUint16(byteOffset + low, littleEndian);
     },
     getUint64: function (byteOffset, littleEndian)
@@ -75,7 +77,10 @@ SpiceDataView.prototype = {
             high = 4;
         }
 
-        return (this.getUint32(byteOffset + high, littleEndian) << 32) |
+        /* JS shift counts are taken mod 32, so << 32 is a no-op and the old
+           expression returned high | low.  Values above 2^53 still lose
+           precision in a Number, but the halves no longer collapse. */
+        return (this.getUint32(byteOffset + high, littleEndian) * 0x100000000) +
                 this.getUint32(byteOffset + low, littleEndian);
     },
     setUint8:  function(byteOffset, b)
@@ -114,8 +119,10 @@ SpiceDataView.prototype = {
             high = 4;
         }
 
-        this.setUint32(byteOffset + high, (w & 0xffffffffffffffff) >> 32, littleEndian);
-        this.setUint32(byteOffset + low,  (w & 0x00000000ffffffff), littleEndian);
+        /* & coerces to Int32 and >> 32 is a no-op, so the old expression
+           wrote the value into BOTH dwords.  Split with arithmetic. */
+        this.setUint32(byteOffset + high, Math.floor(w / 0x100000000), littleEndian);
+        this.setUint32(byteOffset + low,  w >>> 0, littleEndian);
     },
 }
 
