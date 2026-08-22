@@ -34,6 +34,11 @@ var Ctrl_state = -1;
 var Alt_state = -1;
 var Meta_state = -1;
 
+/* Extended (0xE0-prefixed) scancodes for the Meta/Super keys, matching
+   the values in the scancode maps (utils.js / code_to_scancode.js). */
+var META_L_SCAN = 0xE0 | (0x5B << 8);
+var META_R_SCAN = 0xE0 | (0x5C << 8);
+
 /*----------------------------------------------------------------------------
 **  SpiceInputsConn
 **      Drive the Spice Inputs channel (e.g. mouse + keyboard)
@@ -219,7 +224,10 @@ function update_modifier(state, code, sc)
     if (!state)
     {
         var key = new Messages.SpiceMsgcKeyUp()
-        key.code =(0x80|code);
+        /* Extended (two-byte) scancodes carry the break bit in their second
+           byte, as keycode_to_end_scan does; 0x80 would land in the 0xE0
+           prefix and corrupt it. */
+        key.code = code < 0x100 ? (0x80|code) : (0x8000|code);
         msg.build_msg(Constants.SPICE_MSGC_INPUTS_KEY_UP, key);
     }
     else
@@ -248,7 +256,7 @@ function check_and_update_modifiers(e, code, sc)
         Alt_state = true;
     else if (code === KeyNames.KEY_LCtrl)
         Ctrl_state = true;
-    else if (code === 0xE0B5)
+    else if (code === META_L_SCAN || code === META_R_SCAN)
         Meta_state = true;
     else if (code === (0x80|KeyNames.KEY_ShiftL))
         Shift_state = false;
@@ -256,7 +264,7 @@ function check_and_update_modifiers(e, code, sc)
         Alt_state = false;
     else if (code === (0x80|KeyNames.KEY_LCtrl))
         Ctrl_state = false;
-    else if (code === (0x80|0xE0B5))
+    else if (code === (0x8000|META_L_SCAN) || code === (0x8000|META_R_SCAN))
         Meta_state = false;
 
     if (sc && sc.inputs && sc.inputs.state === "ready")
@@ -282,7 +290,7 @@ function check_and_update_modifiers(e, code, sc)
         if (Meta_state != e.metaKey)
         {
             console.log("Meta state out of sync");
-            update_modifier(e.metaKey, 0xE0B5, sc);
+            update_modifier(e.metaKey, META_L_SCAN, sc);
             Meta_state = e.metaKey;
         }
     }
