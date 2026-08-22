@@ -225,6 +225,16 @@ SpiceMainConn.prototype.process_channel_message = function(msg)
     if (msg.type == Constants.SPICE_MSG_MAIN_AGENT_DISCONNECTED)
     {
         this.agent_connected = false;
+
+        /* Fail transfers in flight rather than strand them: with the
+           agent gone their chunks are silently dropped, so they would
+           never complete, never error, and their progress bars would sit
+           on screen forever. */
+        this.agent_msg_queue = [];
+        this.file_xfer_read_queue = [];
+        for (var task_id in this.file_xfer_tasks)
+            this.file_xfer_completed(this.file_xfer_tasks[task_id],
+                new Error("Agent disconnected; file transfer aborted."));
         return true;
     }
 
@@ -485,7 +495,12 @@ SpiceMainConn.prototype.file_xfer_read = function(file_xfer_task, start_byte)
                                                        e.target.result.byteLength,
                                                        e.target.result);
         _this.send_agent_message(Constants.VD_AGENT_FILE_XFER_DATA, xfer_data);
-        _this.file_xfer_read(file_xfer_task, eb);
+        /* Only recurse while bytes remain.  The old code always recursed
+           and relied on the start_byte > 0 guard above to terminate, which
+           a zero-byte file never satisfies — it looped forever, burning an
+           agent token per iteration. */
+        if (eb < file_xfer_task.file.size)
+            _this.file_xfer_read(file_xfer_task, eb);
         file_xfer_task.update_progressbar(eb);
     };
 
