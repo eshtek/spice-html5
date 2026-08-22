@@ -32,7 +32,7 @@ function SpicePortConn()
 {
     DEBUG > 0 && console.log('SPICE port: created SPICE port channel. Args:', arguments);
     SpiceConn.apply(this, arguments);
-    this.port_name = null;
+    this.portName = null;
 }
 
 SpicePortConn.prototype = Object.create(SpiceConn.prototype);
@@ -41,7 +41,7 @@ SpicePortConn.prototype.process_channel_message = function(msg)
 {
     if (msg.type == Constants.SPICE_MSG_PORT_INIT)
     {
-        if (this.port_name === null)
+        if (this.portName === null)
         {
             var m = new SpiceMsgPortInit(msg.data);
             this.portName = arraybuffer_to_str(new Uint8Array(m.name));
@@ -50,7 +50,7 @@ SpicePortConn.prototype.process_channel_message = function(msg)
             return true;
         }
 
-        DEBUG > 0 && console.log('SPICE port: Port', this.port_name, 'is already initialized.');
+        DEBUG > 0 && console.log('SPICE port: Port', this.portName, 'is already initialized.');
     }
     else if (msg.type == Constants.SPICE_MSG_PORT_EVENT)
     {
