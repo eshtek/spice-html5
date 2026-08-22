@@ -63,6 +63,12 @@ function SpiceConn(o)
         this.parent = o.parent;
         this.message_id = o.parent.message_id;
         this.password = o.parent.password;
+        /* Without this a child channel that dies mid-session (display,
+           inputs, cursor...) reports nothing: the close handler requires
+           an onerror, and report_error without one throws uncaught inside
+           a WebSocket event handler.  The application only ever hears
+           about the main channel. */
+        this.onerror = o.parent.onerror;
     }
     if (o.screen_id !== undefined)
         this.screen_id = o.screen_id;
@@ -497,6 +503,10 @@ SpiceConn.prototype =
 
     cleanup: function()
     {
+        /* Deliberate teardown: without this the ws close event arrives
+           with a live state and reports "Unexpected close" through
+           onerror. */
+        this.state = "closing";
         if (this.timeout)
         {
             window.clearTimeout(this.timeout);
