@@ -57,7 +57,7 @@ unknown_cursor: function(sha1, curdata)
     {
         SpiceSimulateCursor.unknown_cursors[sha1] = curdata;
         console.log('Unknown cursor.  Simulation required.  To avoid simulation for this cursor, create and include a custom javascript file, and add the following line:');
-        console.log('SpiceCursorSimulator.add_cursor("' + sha1 + '"), "<your filename here>.cur");');
+        console.log('SpiceSimulateCursor.add_cursor("' + sha1 + '", "<your filename here>.cur");');
         console.log('And then run following command, redirecting output into <your filename here>.cur:');
         console.log('php -r "echo urldecode(\'' + curdata + '\');"');
     }
