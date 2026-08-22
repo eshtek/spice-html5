@@ -176,7 +176,7 @@ SpiceMainConn.prototype.process_channel_message = function(msg)
             else if (chans.channels[i].type == Constants.SPICE_CHANNEL_CURSOR)
                 this.cursor = new SpiceCursorConn(conn);
             else if (chans.channels[i].type == Constants.SPICE_CHANNEL_PLAYBACK)
-                this.cursor = new SpicePlaybackConn(conn);
+                this.playback = new SpicePlaybackConn(conn);
             else if (chans.channels[i].type == Constants.SPICE_CHANNEL_PORT)
                 this.ports.push(new SpicePortConn(conn));
             else
@@ -327,6 +327,12 @@ SpiceMainConn.prototype.stop = function(msg)
     {
         this.cursor.cleanup();
         this.cursor = undefined;
+    }
+
+    if (this.playback)
+    {
+        this.playback.cleanup();
+        this.playback = undefined;
     }
 
     if (this.display)
