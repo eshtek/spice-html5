@@ -606,7 +606,7 @@ SpiceDisplayConn.prototype.process_channel_message = function(msg)
         else
             m = new Messages.SpiceMsgDisplayStreamData(msg.data);
 
-        if (!this.streams[m.base.id])
+        if (!this.streams || !this.streams[m.base.id])
         {
             console.log("no stream for data");
             return false;
@@ -628,7 +628,7 @@ SpiceDisplayConn.prototype.process_channel_message = function(msg)
         var m = new Messages.SpiceMsgDisplayStreamActivateReport(msg.data);
 
         var report = new Messages.SpiceMsgcDisplayStreamReport(m.stream_id, m.unique_id);
-        if (this.streams[m.stream_id])
+        if (this.streams && this.streams[m.stream_id])
         {
             this.streams[m.stream_id].report = report;
             this.streams[m.stream_id].max_window_size = m.max_window_size;
@@ -642,7 +642,10 @@ SpiceDisplayConn.prototype.process_channel_message = function(msg)
     {
         var m = new Messages.SpiceMsgDisplayStreamClip(msg.data);
         Utils.STREAM_DEBUG > 1 && console.log(this.type + ": MsgStreamClip id" + m.id);
-        this.streams[m.id].clip = m.clip;
+        /* A clip for a stream that was already destroyed must not throw:
+           an exception in a handler desyncs the channel framing. */
+        if (this.streams && this.streams[m.id])
+            this.streams[m.id].clip = m.clip;
         return true;
     }
 
@@ -671,7 +674,7 @@ SpiceDisplayConn.prototype.process_channel_message = function(msg)
         var i;
         Utils.DEBUG > 1 && console.log(this.type + ": MsgInvalList " + m.count + " items");
         for (i = 0; i < m.count; i++)
-            if (this.cache[m.resources[i].id] != undefined)
+            if (this.cache && this.cache[m.resources[i].id] != undefined)
                 delete this.cache[m.resources[i].id];
         return true;
     }
@@ -945,11 +948,13 @@ function handle_draw_jpeg_onload()
     **  The helper should be extended to be able to handle actual HtmlImageElements
     **  ...and the cache should be modified to do so as well
     **----------------------------------------------------------*/
-    if (this.o.sc.surfaces[this.o.base.surface_id] === undefined)
+    if (this.o.sc.surfaces === undefined ||
+        this.o.sc.surfaces[this.o.base.surface_id] === undefined)
     {
         // This can happen; if the jpeg image loads after our surface
-        //  has been destroyed (e.g. open a menu, close it quickly),
-        //  we'll find we have no surface.
+        //  has been destroyed (e.g. open a menu, close it quickly) or
+        //  after the whole connection was stopped, we'll find we have
+        //  no surface.
         Utils.DEBUG > 2 && this.o.sc.log_info("Discarding jpeg; presumed lost surface " + this.o.base.surface_id);
         temp_canvas = document.createElement("canvas");
         temp_canvas.setAttribute('width', this.o.base.box.right);
@@ -1020,7 +1025,7 @@ function handle_draw_jpeg_onload()
         this.o.sc.surfaces[this.o.base.surface_id].draw_count++;
     }
 
-    if (this.o.sc.streams[this.o.id] && "report" in this.o.sc.streams[this.o.id])
+    if (this.o.sc.streams && this.o.sc.streams[this.o.id] && "report" in this.o.sc.streams[this.o.id])
         process_stream_data_report(this.o.sc, this.o.id, this.o.msg_mmtime, this.o.msg_mmtime - this.o.sc.parent.relative_now());
 }
 
