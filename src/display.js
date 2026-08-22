@@ -295,7 +295,7 @@ SpiceDisplayConn.prototype.process_channel_message = function(msg)
                       src_area: draw_copy.data.src_area,
                       image_data: source_img,
                       tag: "bitmap." + draw_copy.data.src_bitmap.bitmap.format,
-                      has_alpha: draw_copy.data.src_bitmap.bitmap == Constants.SPICE_BITMAP_FMT_32BIT ? false : true,
+                      has_alpha: draw_copy.data.src_bitmap.bitmap.format != Constants.SPICE_BITMAP_FMT_32BIT,
                       descriptor : draw_copy.data.src_bitmap.descriptor
                     });
             }
