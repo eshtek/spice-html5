@@ -651,14 +651,11 @@ SpiceDisplayConn.prototype.process_channel_message = function(msg)
         var m = new Messages.SpiceMsgDisplayStreamDestroy(msg.data);
         Utils.STREAM_DEBUG > 0 && console.log(this.type + ": MsgStreamDestroy id" + m.id);
 
-        if (this.streams[m.id].codec_type == Constants.SPICE_VIDEO_CODEC_TYPE_VP8)
-        {
-            document.getElementById(this.parent.screen_id).removeChild(this.streams[m.id].video);
-            this.streams[m.id].source_buffer = null;
-            this.streams[m.id].media = null;
-            this.streams[m.id].video = null;
-        }
-        this.streams[m.id] = undefined;
+        /* A destroy for an unknown or already-destroyed id must not throw:
+           an exception here skips the wire reader's rearm and desyncs the
+           channel framing for good. */
+        if (this.streams && this.streams[m.id])
+            this.destroy_stream(m.id);
         return true;
     }
 
@@ -879,6 +876,26 @@ SpiceDisplayConn.prototype.unhook_events = function()
 }
 
 
+SpiceDisplayConn.prototype.destroy_stream = function(id)
+{
+    var stream = this.streams[id];
+    if (stream.codec_type == Constants.SPICE_VIDEO_CODEC_TYPE_VP8)
+    {
+        if (stream.video)
+        {
+            if (stream.video.parentNode)
+                stream.video.parentNode.removeChild(stream.video);
+            /* The blob URL registration outlives the element; without the
+               revoke each stream create/destroy cycle leaked one. */
+            window.URL.revokeObjectURL(stream.video.src);
+        }
+        stream.source_buffer = null;
+        stream.media = null;
+        stream.video = null;
+    }
+    this.streams[id] = undefined;
+}
+
 SpiceDisplayConn.prototype.destroy_surfaces = function()
 {
     for (var s in this.surfaces)
@@ -887,6 +904,19 @@ SpiceDisplayConn.prototype.destroy_surfaces = function()
     }
 
     this.surfaces = undefined;
+
+    /* Streams own DOM video elements and MediaSources that live in the
+       screen div, not in a surface; a client-side stop mid-stream left
+       them behind to pile up across reconnects. */
+    if (this.streams)
+    {
+        for (var i = 0; i < this.streams.length; i++)
+        {
+            if (this.streams[i])
+                this.destroy_stream(i);
+        }
+        this.streams = undefined;
+    }
 }
 
 
