@@ -247,7 +247,12 @@ function rsa_encrypt(rsa, str)
     var bigint = new BigInteger(ba);
     var enc = rsa.doPublic(bigint);
     var h = enc.toString(16);
-    if ((h.length & 1) != 0)
+
+    /* BigInteger.toString() drops leading zeros, and the ticket field the
+       caller writes this into is padded at the tail, so a short result
+       would shift the whole ciphertext.  Pad back to the modulus width. */
+    var hexlen = ((rsa.n.bitLength() + 7) >> 3) * 2;
+    while (h.length < hexlen)
         h = "0" + h;
     for (i = 0; i < h.length; i += 2)
         ret[i / 2] = parseInt(h.substring(i, i + 2), 16);
