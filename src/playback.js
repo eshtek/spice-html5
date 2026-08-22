@@ -71,7 +71,10 @@ SpicePlaybackConn.prototype.process_channel_message = function(msg)
             return false;
         }
 
-        if (! this.source_buffer)
+        /* Keyed on the audio element, not source_buffer: source_buffer is
+           only set asynchronously in handle_source_open, so a second START
+           arriving before sourceopen would stack a second audio element. */
+        if (! this.audio)
         {
             this.media_source = new MediaSource();
             this.media_source.spiceconn = this;
@@ -158,7 +161,9 @@ SpicePlaybackConn.prototype.process_channel_message = function(msg)
         if (mode.mode != Constants.SPICE_AUDIO_DATA_MODE_OPUS)
         {
             this.log_err('This player cannot handle mode ' + mode.mode);
-            delete this.source_buffer;
+            /* Deleting just source_buffer left the audio element and its
+               object URL orphaned with no guard left to reclaim them. */
+            this.destroy_audio();
         }
         return true;
     }
@@ -166,19 +171,9 @@ SpicePlaybackConn.prototype.process_channel_message = function(msg)
     if (msg.type == Constants.SPICE_MSG_PLAYBACK_STOP)
     {
         Utils.PLAYBACK_DEBUG > 0 && console.log("PlaybackStop");
-        if (this.source_buffer)
+        if (this.audio)
         {
-            document.getElementById(this.parent.screen_id).removeChild(this.audio);
-            window.URL.revokeObjectURL(this.audio.src);
-
-            delete this.source_buffer;
-            delete this.media_source;
-            delete this.audio;
-
-            this.append_okay = false;
-            this.queue = new Array();
-            this.start_time = 0;
-
+            this.destroy_audio();
             return true;
         }
     }
@@ -202,6 +197,34 @@ SpicePlaybackConn.prototype.process_channel_message = function(msg)
     }
 
     return false;
+}
+
+SpicePlaybackConn.prototype.destroy_audio = function()
+{
+    if (! this.audio)
+        return;
+
+    if (this.audio.parentNode)
+        this.audio.parentNode.removeChild(this.audio);
+    window.URL.revokeObjectURL(this.audio.src);
+
+    delete this.source_buffer;
+    delete this.media_source;
+    delete this.audio;
+
+    this.append_okay = false;
+    this.queue = new Array();
+    this.start_time = 0;
+}
+
+/* A client-side stop must reclaim the audio element, its object URL and
+   the MediaSource; without this they were only freed by a server STOP,
+   and an application that stops and recreates connections leaked one
+   set per cycle. */
+SpicePlaybackConn.prototype.cleanup = function()
+{
+    this.destroy_audio();
+    SpiceConn.prototype.cleanup.call(this);
 }
 
 SpicePlaybackConn.prototype.start_playback = function(data)
