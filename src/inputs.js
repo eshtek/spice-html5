@@ -51,6 +51,11 @@ function SpiceInputsConn()
     this.mousey = undefined;
     this.button_state = 0;
     this.waiting_for_ack = 0;
+
+    /* Modifier tracking is module state; a page that tears down one
+       connection and creates another must not inherit the previous
+       session's held keys. */
+    Shift_state = Ctrl_state = Alt_state = Meta_state = -1;
 }
 
 SpiceInputsConn.prototype = Object.create(SpiceConn.prototype);
@@ -210,8 +215,12 @@ function sendCtrlAltDel(sc)
         msg.build_msg(Constants.SPICE_MSGC_INPUTS_KEY_UP, key);
         sc.inputs.send_msg(msg);
 
-        if(Ctrl_state == false) update_modifier(false, KeyNames.KEY_LCtrl, sc);
-        if(Alt_state == false) update_modifier(false, KeyNames.KEY_Alt, sc);
+        /* Release unless the key is positively known to be held: the state
+           starts as the -1 sentinel (no key seen yet), and -1 == false is
+           false, so testing against false left the synthetic Ctrl+Alt held
+           in the guest whenever this ran before the first real keydown. */
+        if(Ctrl_state !== true) update_modifier(false, KeyNames.KEY_LCtrl, sc);
+        if(Alt_state !== true) update_modifier(false, KeyNames.KEY_Alt, sc);
     }
 }
 
