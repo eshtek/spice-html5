@@ -509,6 +509,12 @@ SpiceDisplayConn.prototype.process_channel_message = function(msg)
         canvas.setAttribute('tabindex', m.surface.surface_id);
         canvas.context = canvas.getContext("2d");
 
+        /* A fresh canvas is fully transparent; a real SPICE client presents a
+           black framebuffer. Without this, regions the guest never draws
+           (e.g. during firmware boot) show the page background through. */
+        canvas.context.fillStyle = "black";
+        canvas.context.fillRect(0, 0, m.surface.width, m.surface.height);
+
         if (Utils.DUMP_CANVASES && this.parent.dump_id)
             document.getElementById(this.parent.dump_id).appendChild(canvas);
 
