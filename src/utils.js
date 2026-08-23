@@ -274,7 +274,10 @@ function keycode_to_start_scan(keyCode, code)
     var scancode = get_scancode(keyCode, code);
     if (scancode === undefined)
     {
-        alert('no map for ' + keyCode);
+        /* Not an alert: a modal steals the keyboard mid-typing, and an
+           unmapped key (e.g. Firefox reports keyCode 224 for Meta) is
+           an ordinary event, not an emergency. */
+        console.warn('no map for ' + keyCode);
         return 0;
     }
 
