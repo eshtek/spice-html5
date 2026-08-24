@@ -60,6 +60,28 @@ function stripAlpha(d)
         d.data[i + 3] = 255;
 }
 
+/* JPEG frames used to be turned into percent-encoded data: URIs one byte at
+   a time — an O(n) string build per frame that dominated MJPEG playback.
+   A Blob URL hands the bytes to the decoder directly; it must be revoked
+   once the image has loaded (or failed) or each frame leaks its blob. */
+function jpeg_image_url(data)
+{
+    return URL.createObjectURL(new Blob([data], { type: "image/jpeg" }));
+}
+
+function revoke_jpeg_image_url(img)
+{
+    if (img.src && img.src.lastIndexOf("blob:", 0) === 0)
+        URL.revokeObjectURL(img.src);
+}
+
+function handle_draw_jpeg_onerror()
+{
+    revoke_jpeg_image_url(this);
+    if ("streams" in this.o.sc && this.o.sc.streams[this.o.id])
+        this.o.sc.streams[this.o.id].frames_loading--;
+}
+
 /*----------------------------------------------------------------------------
 **  SpiceDisplayConn
 **      Drive the Spice Display Channel
@@ -196,20 +218,7 @@ SpiceDisplayConn.prototype.process_channel_message = function(msg)
                     return false;
                 }
 
-                // FIXME - how lame is this.  Be have it in binary format, and we have
-                //         to put it into string to get it back into jpeg.  Blech.
-                var tmpstr = "data:image/jpeg,";
                 var img = new Image;
-                var i;
-                var qdv = new Uint8Array(draw_copy.data.src_bitmap.jpeg.data);
-                for (i = 0; i < qdv.length; i++)
-                {
-                    tmpstr +=  '%';
-                    if (qdv[i] < 16)
-                        tmpstr += '0';
-                    tmpstr += qdv[i].toString(16);
-                }
-
                 img.o =
                     { base: draw_copy.base,
                       tag: "jpeg." + draw_copy.data.src_bitmap.surface_id,
@@ -217,7 +226,8 @@ SpiceDisplayConn.prototype.process_channel_message = function(msg)
                       sc : this,
                     };
                 img.onload = handle_draw_jpeg_onload;
-                img.src = tmpstr;
+                img.onerror = handle_draw_jpeg_onerror;
+                img.src = jpeg_image_url(draw_copy.data.src_bitmap.jpeg.data);
 
                 return true;
             }
@@ -229,20 +239,7 @@ SpiceDisplayConn.prototype.process_channel_message = function(msg)
                     return false;
                 }
 
-                // FIXME - how lame is this.  Be have it in binary format, and we have
-                //         to put it into string to get it back into jpeg.  Blech.
-                var tmpstr = "data:image/jpeg,";
                 var img = new Image;
-                var i;
-                var qdv = new Uint8Array(draw_copy.data.src_bitmap.jpeg_alpha.data);
-                for (i = 0; i < qdv.length; i++)
-                {
-                    tmpstr +=  '%';
-                    if (qdv[i] < 16)
-                        tmpstr += '0';
-                    tmpstr += qdv[i].toString(16);
-                }
-
                 img.o =
                     { base: draw_copy.base,
                       tag: "jpeg." + draw_copy.data.src_bitmap.surface_id,
@@ -258,7 +255,8 @@ SpiceDisplayConn.prototype.process_channel_message = function(msg)
                                             draw_copy.data.src_bitmap.jpeg_alpha.alpha);
                 }
                 img.onload = handle_draw_jpeg_onload;
-                img.src = tmpstr;
+                img.onerror = handle_draw_jpeg_onerror;
+                img.src = jpeg_image_url(draw_copy.data.src_bitmap.jpeg_alpha.data);
 
                 return true;
             }
@@ -946,6 +944,10 @@ function handle_draw_jpeg_onload()
     var temp_canvas = null;
     var context;
 
+    /* The decoded bitmap survives the revoke; without it every frame's
+       blob stays registered for the life of the page. */
+    revoke_jpeg_image_url(this);
+
     if ("streams" in this.o.sc && this.o.sc.streams[this.o.id])
         this.o.sc.streams[this.o.id].frames_loading--;
 
@@ -1047,16 +1049,7 @@ function process_mjpeg_stream_data(sc, m, time_until_due)
         return;
     }
 
-    var tmpstr = "data:image/jpeg,";
     var img = new Image;
-    var i;
-    for (i = 0; i < m.data.length; i++)
-    {
-        tmpstr +=  '%';
-        if (m.data[i] < 16)
-        tmpstr += '0';
-        tmpstr += m.data[i].toString(16);
-    }
     var strm_base = new Messages.SpiceMsgDisplayBase();
     strm_base.surface_id = sc.streams[m.base.id].surface_id;
     strm_base.box = m.dest || sc.streams[m.base.id].dest;
@@ -1070,7 +1063,8 @@ function process_mjpeg_stream_data(sc, m, time_until_due)
           msg_mmtime : m.base.multi_media_time,
         };
     img.onload = handle_draw_jpeg_onload;
-    img.src = tmpstr;
+    img.onerror = handle_draw_jpeg_onerror;
+    img.src = jpeg_image_url(m.data);
 
     sc.streams[m.base.id].frames_loading++;
 }
