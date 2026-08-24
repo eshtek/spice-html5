@@ -20,10 +20,9 @@
 
 /*----------------------------------------------------------------------------
 **  SpiceDataView
-** FIXME FIXME
-**    This is used because Firefox does not have DataView yet.
-**    We should use DataView if we have it, because it *has* to
-**    be faster than this code
+**    Historically a byte-at-a-time reimplementation for browsers without
+**    DataView.  Now backed by the native DataView (much faster for message
+**    parsing); the u8 view is kept because callers subarray() it directly.
 **--------------------------------------------------------------------------*/
 function SpiceDataView(buffer, byteOffset, byteLength)
 {
@@ -36,6 +35,7 @@ function SpiceDataView(buffer, byteOffset, byteLength)
     }
     else
         this.u8 = new Uint8Array(buffer);
+    this.dv = new DataView(this.u8.buffer, this.u8.byteOffset, this.u8.byteLength);
 };
 
 SpiceDataView.prototype = {
@@ -45,28 +45,11 @@ SpiceDataView.prototype = {
     },
     getUint16:  function(byteOffset, littleEndian)
     {
-        var low = 1, high = 0;
-        if (littleEndian)
-        {
-            low = 0;
-            high = 1;
-        }
-
-        return (this.u8[byteOffset + high] << 8) | this.u8[byteOffset + low];
+        return this.dv.getUint16(byteOffset, littleEndian);
     },
     getUint32:  function(byteOffset, littleEndian)
     {
-        var low = 2, high = 0;
-        if (littleEndian)
-        {
-            low = 0;
-            high = 2;
-        }
-
-        /* Multiply, not shift: << 16 yields a negative number for values
-           with the top bit set. */
-        return (this.getUint16(byteOffset + high, littleEndian) * 0x10000) +
-                this.getUint16(byteOffset + low, littleEndian);
+        return this.dv.getUint32(byteOffset, littleEndian);
     },
     getUint64: function (byteOffset, littleEndian)
     {
@@ -77,11 +60,10 @@ SpiceDataView.prototype = {
             high = 4;
         }
 
-        /* JS shift counts are taken mod 32, so << 32 is a no-op and the old
-           expression returned high | low.  Values above 2^53 still lose
-           precision in a Number, but the halves no longer collapse. */
-        return (this.getUint32(byteOffset + high, littleEndian) * 0x100000000) +
-                this.getUint32(byteOffset + low, littleEndian);
+        /* Combined with arithmetic, not shifts, so values past 2^32 survive;
+           a Number still loses precision above 2^53. */
+        return (this.dv.getUint32(byteOffset + high, littleEndian) * 0x100000000) +
+                this.dv.getUint32(byteOffset + low, littleEndian);
     },
     setUint8:  function(byteOffset, b)
     {
@@ -89,26 +71,11 @@ SpiceDataView.prototype = {
     },
     setUint16:  function(byteOffset, i, littleEndian)
     {
-        var low = 1, high = 0;
-        if (littleEndian)
-        {
-            low = 0;
-            high = 1;
-        }
-        this.u8[byteOffset + high] = (i & 0xffff) >> 8;
-        this.u8[byteOffset + low]  = (i & 0x00ff);
+        this.dv.setUint16(byteOffset, i, littleEndian);
     },
     setUint32:  function(byteOffset, w, littleEndian)
     {
-        var low = 2, high = 0;
-        if (littleEndian)
-        {
-            low = 0;
-            high = 2;
-        }
-
-        this.setUint16(byteOffset + high, (w & 0xffffffff) >> 16, littleEndian);
-        this.setUint16(byteOffset + low,  (w & 0x0000ffff), littleEndian);
+        this.dv.setUint32(byteOffset, w >>> 0, littleEndian);
     },
     setUint64:  function(byteOffset, w, littleEndian)
     {
@@ -119,10 +86,8 @@ SpiceDataView.prototype = {
             high = 4;
         }
 
-        /* & coerces to Int32 and >> 32 is a no-op, so the old expression
-           wrote the value into BOTH dwords.  Split with arithmetic. */
-        this.setUint32(byteOffset + high, Math.floor(w / 0x100000000), littleEndian);
-        this.setUint32(byteOffset + low,  w >>> 0, littleEndian);
+        this.dv.setUint32(byteOffset + high, Math.floor(w / 0x100000000), littleEndian);
+        this.dv.setUint32(byteOffset + low,  w >>> 0, littleEndian);
     },
 }
 
