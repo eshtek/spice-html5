@@ -90,22 +90,25 @@ SpiceInputsConn.prototype.process_channel_message = function(msg)
 
 function handle_mousemove(e)
 {
-    var msg = new Messages.SpiceMiniData();
-    var move;
-    if (this.sc.mouse_mode == Constants.SPICE_MOUSE_MODE_CLIENT)
-    {
-        move = new Messages.SpiceMsgcMousePosition(this.sc, e)
-        msg.build_msg(Constants.SPICE_MSGC_INPUTS_MOUSE_POSITION, move);
-    }
-    else
-    {
-        move = new Messages.SpiceMsgcMouseMotion(this.sc, e)
-        msg.build_msg(Constants.SPICE_MSGC_INPUTS_MOUSE_MOTION, move);
-    }
+    /* Only build the message once we know it will be sent; mousemove can
+       fire hundreds of times a second and the discarded-motion path was
+       paying for two allocations and a serialize per event. */
     if (this.sc && this.sc.inputs && this.sc.inputs.state === "ready")
     {
         if (this.sc.inputs.waiting_for_ack < (2 * Constants.SPICE_INPUT_MOTION_ACK_BUNCH))
         {
+            var msg = new Messages.SpiceMiniData();
+            var move;
+            if (this.sc.mouse_mode == Constants.SPICE_MOUSE_MODE_CLIENT)
+            {
+                move = new Messages.SpiceMsgcMousePosition(this.sc, e)
+                msg.build_msg(Constants.SPICE_MSGC_INPUTS_MOUSE_POSITION, move);
+            }
+            else
+            {
+                move = new Messages.SpiceMsgcMouseMotion(this.sc, e)
+                msg.build_msg(Constants.SPICE_MSGC_INPUTS_MOUSE_MOTION, move);
+            }
             this.sc.inputs.send_msg(msg);
             this.sc.inputs.waiting_for_ack++;
         }
