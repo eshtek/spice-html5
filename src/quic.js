@@ -1297,15 +1297,16 @@ function convert_spice_quic_to_web(context, spice_quic)
 {
     var ret = context.createImageData(spice_quic.width, spice_quic.height);
     var i;
-    for (i = 0; i < (ret.width * ret.height * 4); i+=4)
+    var dest = ret.data;
+    var src = spice_quic.outptr;
+    var n = ret.width * ret.height * 4;
+    var rgba = spice_quic.type === Constants.QUIC_IMAGE_TYPE_RGBA;
+    for (i = 0; i < n; i+=4)
     {
-        ret.data[i + 0] = spice_quic.outptr[i + 2];
-        ret.data[i + 1] = spice_quic.outptr[i + 1];
-        ret.data[i + 2] = spice_quic.outptr[i + 0];
-        if (spice_quic.type !== Constants.QUIC_IMAGE_TYPE_RGBA)
-            ret.data[i + 3] = 255;
-        else
-            ret.data[i + 3] = 255 - spice_quic.outptr[i + 3];
+        dest[i + 0] = src[i + 2];
+        dest[i + 1] = src[i + 1];
+        dest[i + 2] = src[i + 0];
+        dest[i + 3] = rgba ? 255 - src[i + 3] : 255;
     }
    return ret;
 }
