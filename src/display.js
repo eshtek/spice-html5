@@ -36,14 +36,24 @@ import { convert_spice_bitmap_to_web } from './bitmap.js';
 **           and then use drawImage to put it onto the target,
 **           as drawImage does alpha.
 **--------------------------------------------------------------------------*/
+/* One shared scratch canvas; allocating a fresh one per draw dominated
+   profiles under drawing-heavy guests. It only ever grows. */
+var scratch_canvas = null;
+var scratch_context = null;
+
 function putImageDataWithAlpha(context, d, x, y)
 {
-    var c = document.createElement("canvas");
-    var t = c.getContext("2d");
-    c.setAttribute('width', d.width);
-    c.setAttribute('height', d.height);
-    t.putImageData(d, 0, 0);
-    context.drawImage(c, x, y, d.width, d.height);
+    if (scratch_canvas === null)
+    {
+        scratch_canvas = document.createElement("canvas");
+        scratch_context = scratch_canvas.getContext("2d");
+    }
+    if (scratch_canvas.width < d.width)
+        scratch_canvas.width = d.width;
+    if (scratch_canvas.height < d.height)
+        scratch_canvas.height = d.height;
+    scratch_context.putImageData(d, 0, 0);
+    context.drawImage(scratch_canvas, 0, 0, d.width, d.height, x, y, d.width, d.height);
 }
 
 /*----------------------------------------------------------------------------
@@ -56,8 +66,10 @@ function putImageDataWithAlpha(context, d, x, y)
 function stripAlpha(d)
 {
     var i;
-    for (i = 0; i < (d.width * d.height * 4); i += 4)
-        d.data[i + 3] = 255;
+    var data = d.data;
+    var n = d.width * d.height * 4;
+    for (i = 3; i < n; i += 4)
+        data[i] = 255;
 }
 
 /* JPEG frames used to be turned into percent-encoded data: URIs one byte at
@@ -445,10 +457,13 @@ SpiceDisplayConn.prototype.process_channel_message = function(msg)
         if (height > (copy_bits.base.box.bottom - copy_bits.base.box.top))
             height = copy_bits.base.box.bottom - copy_bits.base.box.top;
 
-        var source_img = source_context.getImageData(
-                copy_bits.src_pos.x, copy_bits.src_pos.y, width, height);
-        //source_context.putImageData(source_img, copy_bits.base.box.left, copy_bits.base.box.top);
-        putImageDataWithAlpha(source_context, source_img, copy_bits.base.box.left, copy_bits.base.box.top);
+        /* drawImage from a canvas onto itself snapshots the source rect
+           first (per the 2D canvas spec), so this replaces a getImageData
+           round-trip — a full GPU->CPU sync readback per scroll — with a
+           blit that stays on the GPU. */
+        source_context.drawImage(source_canvas,
+                copy_bits.src_pos.x, copy_bits.src_pos.y, width, height,
+                copy_bits.base.box.left, copy_bits.base.box.top, width, height);
 
         if (Utils.DUMP_DRAWS && this.parent.dump_id)
         {
@@ -456,7 +471,9 @@ SpiceDisplayConn.prototype.process_channel_message = function(msg)
             debug_canvas.setAttribute('width', width);
             debug_canvas.setAttribute('height', height);
             debug_canvas.setAttribute('id', "copybits" + copy_bits.base.surface_id + "." + this.surfaces[copy_bits.base.surface_id].draw_count);
-            debug_canvas.getContext("2d").putImageData(source_img, 0, 0);
+            debug_canvas.getContext("2d").drawImage(source_canvas,
+                copy_bits.base.box.left, copy_bits.base.box.top, width, height,
+                0, 0, width, height);
             document.getElementById(this.parent.dump_id).appendChild(debug_canvas);
         }
 
