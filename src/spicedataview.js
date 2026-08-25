@@ -86,7 +86,8 @@ SpiceDataView.prototype = {
             high = 4;
         }
 
-        this.dv.setUint32(byteOffset + high, Math.floor(w / 0x100000000), littleEndian);
+        /* Split with arithmetic: a 64-bit value does not fit a shift. */
+        this.dv.setUint32(byteOffset + high, (w / 0x100000000) >>> 0, littleEndian);
         this.dv.setUint32(byteOffset + low,  w >>> 0, littleEndian);
     },
 }
