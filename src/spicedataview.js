@@ -60,8 +60,8 @@ SpiceDataView.prototype = {
             high = 4;
         }
 
-        /* Combined with arithmetic, not shifts, so values past 2^32 survive;
-           a Number still loses precision above 2^53. */
+        /* JS shift counts are taken mod 32, so << 32 is a no-op.
+           Currently values above 2^53 still lose precision in a Number. */
         return (this.dv.getUint32(byteOffset + high, littleEndian) * 0x100000000) +
                 this.dv.getUint32(byteOffset + low, littleEndian);
     },
