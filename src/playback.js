@@ -91,6 +91,17 @@ SpicePlaybackConn.prototype.process_channel_message = function(msg)
 
             this.bytes_written = 0;
 
+            /* The autoplay attribute alone is not enough. A console opens in
+               its own tab, so the audio element is usually created before
+               anything has been clicked inside it, and every browser's
+               autoplay policy then refuses to start audible playback. The
+               attribute's failure is silent -- no event, no exception, the
+               element simply stays paused -- which presents as a console
+               that is connected, painting, and mute forever. Drive playback
+               explicitly instead, and if it is refused, start it on the
+               first interaction with the page. */
+            this.try_play();
+
             return true;
         }
     }
@@ -199,8 +210,65 @@ SpicePlaybackConn.prototype.process_channel_message = function(msg)
     return false;
 }
 
+/* Start playback, and if the browser refuses, retry once the user
+   interacts. The listeners are capturing and passive so they see the
+   gesture wherever it lands -- the console's own handlers stop plenty of
+   events from bubbling -- and they are torn down on the first success or
+   when the element goes away, so a console that never plays audio does
+   not keep them forever. */
+SpicePlaybackConn.prototype.try_play = function()
+{
+    if (! this.audio)
+        return;
+
+    var conn = this;
+    var p = this.audio.play();
+
+    /* play() predates promises in some engines. */
+    if (! p || typeof p.catch !== 'function')
+        return;
+
+    p.then(function ()
+    {
+        conn.remove_gesture_listeners();
+    })
+    .catch(function (e)
+    {
+        /* AbortError just means a newer load superseded this attempt --
+           the element is still live and the next attempt covers it. */
+        if (e && e.name === 'AbortError')
+            return;
+
+        if (! conn.gesture_listener)
+        {
+            Utils.PLAYBACK_DEBUG > 0 && console.log("Autoplay refused (" + (e && e.name) +
+                                                    "); audio will start on the first click or keypress.");
+            conn.gesture_listener = function ()
+            {
+                conn.remove_gesture_listeners();
+                conn.try_play();
+            };
+            var opts = { capture: true, passive: true };
+            document.addEventListener('pointerdown', conn.gesture_listener, opts);
+            document.addEventListener('keydown', conn.gesture_listener, opts);
+        }
+    });
+}
+
+SpicePlaybackConn.prototype.remove_gesture_listeners = function()
+{
+    if (! this.gesture_listener)
+        return;
+    var opts = { capture: true };
+    document.removeEventListener('pointerdown', this.gesture_listener, opts);
+    document.removeEventListener('keydown', this.gesture_listener, opts);
+    this.gesture_listener = undefined;
+}
+
 SpicePlaybackConn.prototype.destroy_audio = function()
 {
+    this.remove_gesture_listeners();
+
     if (! this.audio)
         return;
 
