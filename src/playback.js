@@ -135,8 +135,252 @@ SpicePlaybackConn.prototype.check_playing = function()
     this.log_err("Audio is arriving but not playing. " + this.status());
 }
 
+/*----------------------------------------------------------------------------
+**  The WebCodecs path: opus packet -> AudioDecoder -> PCM scheduled on an
+**  AudioContext. The only browser-policy surface left is the context's own
+**  suspended state, which one resume() from a gesture clears for good.
+**--------------------------------------------------------------------------*/
+
+/* How far ahead of the clock a frame is scheduled when the cursor has
+   fallen behind (start of stream, or after an underrun). */
+var WEBCODECS_LEAD_S = 0.05;
+
+SpicePlaybackConn.prototype.process_webcodecs_message = function(msg)
+{
+    if (msg.type == Constants.SPICE_MSG_PLAYBACK_START)
+    {
+        var start = new Messages.SpiceMsgPlaybackStart(msg.data);
+        this.milestone("start", "freq " + start.frequency + " channels " +
+                                start.channels + " format " + start.format + "; webcodecs");
+
+        if (start.format != Constants.SPICE_AUDIO_FMT_S16)
+        {
+            this.log_err('This player cannot handle format ' + start.format);
+            return true;
+        }
+
+        this.wc_channels = start.channels;
+        this.wc_frequency = start.frequency;
+        this.setup_audio_context();
+        /* A fresh stream; do not stitch its first frame onto the old
+           stream's schedule. */
+        this.wc_next_time = 0;
+        return true;
+    }
+
+    if (msg.type == Constants.SPICE_MSG_PLAYBACK_DATA)
+    {
+        var data = new Messages.SpiceMsgPlaybackData(msg.data);
+        this.data_msgs++;
+        this.data_bytes += data.data ? data.data.byteLength : 0;
+        this.milestone("data");
+
+        if (! data.data || ! this.wc_ctx)
+            return true;
+
+        if (this.wc_mode == Constants.SPICE_AUDIO_DATA_MODE_RAW)
+            this.schedule_raw_frame(data.data);
+        else
+            this.decode_opus_frame(data);
+        return true;
+    }
+
+    if (msg.type == Constants.SPICE_MSG_PLAYBACK_MODE)
+    {
+        var mode = new Messages.SpiceMsgPlaybackMode(msg.data);
+        if (mode.mode != Constants.SPICE_AUDIO_DATA_MODE_OPUS &&
+            mode.mode != Constants.SPICE_AUDIO_DATA_MODE_RAW)
+        {
+            this.log_err('This player cannot handle mode ' + mode.mode);
+            return true;
+        }
+        this.wc_mode = mode.mode;
+        this.milestone("mode", mode.mode == Constants.SPICE_AUDIO_DATA_MODE_RAW ? "raw" : "opus");
+        return true;
+    }
+
+    if (msg.type == Constants.SPICE_MSG_PLAYBACK_STOP)
+    {
+        Utils.PLAYBACK_DEBUG > 0 && console.log("PlaybackStop");
+        /* Scheduled frames drain on their own; the context stays, so
+           the next stream starts with no policy to renegotiate. Only
+           the pacing cursor resets. */
+        this.wc_next_time = 0;
+        return true;
+    }
+
+    if (msg.type == Constants.SPICE_MSG_PLAYBACK_VOLUME ||
+        msg.type == Constants.SPICE_MSG_PLAYBACK_MUTE ||
+        msg.type == Constants.SPICE_MSG_PLAYBACK_LATENCY)
+    {
+        this.known_unimplemented(msg.type, "Playback Volume/Mute/Latency");
+        return true;
+    }
+
+    return false;
+}
+
+SpicePlaybackConn.prototype.setup_audio_context = function()
+{
+    if (this.wc_ctx)
+    {
+        this.nudge_suspended_context();
+        return;
+    }
+
+    this.wc_ctx = new AudioContext({ latencyHint: 'interactive' });
+
+    var conn = this;
+    this.wc_ctx.onstatechange = function ()
+    {
+        if (conn.wc_ctx && conn.wc_ctx.state === 'running')
+        {
+            conn.milestone("context-running");
+            conn.remove_gesture_listeners();
+        }
+    };
+    this.nudge_suspended_context();
+}
+
+/* The one autoplay rule that applies here: a context created without
+   recent interaction starts suspended. resume() from a gesture always
+   succeeds, so ask once and arm the gesture if refused. */
+SpicePlaybackConn.prototype.nudge_suspended_context = function()
+{
+    if (! this.wc_ctx || this.wc_ctx.state !== 'suspended')
+        return;
+
+    var conn = this;
+    this.gesture_action = function ()
+    {
+        if (conn.wc_ctx)
+            conn.wc_ctx.resume().catch(function () { });
+    };
+    this.wc_ctx.resume().then(function ()
+    {
+        conn.milestone("context-running");
+    })
+    .catch(function () { });
+    if (this.wc_ctx.state === 'suspended')
+        this.arm_gesture_retry("audio output is suspended by the browser");
+}
+
+SpicePlaybackConn.prototype.decode_opus_frame = function(data)
+{
+    var conn = this;
+
+    if (! this.wc_decoder)
+    {
+        this.wc_decoder = new AudioDecoder({
+            output: function (audio_data) { conn.handle_decoded_frame(audio_data); },
+            error: function (e)
+            {
+                conn.log_err('Opus decode failed: ' + e.message);
+                try { conn.wc_decoder.close(); } catch (err) { }
+                conn.wc_decoder = null;
+            },
+        });
+        this.wc_decoder.configure({
+            codec: 'opus',
+            sampleRate: this.wc_frequency,
+            numberOfChannels: this.wc_channels,
+        });
+        this.milestone("decoder");
+    }
+
+    /* Every opus packet decodes independently. Timestamps only need to
+       be monotonic; the server's multimedia clock is. */
+    this.wc_decoder.decode(new EncodedAudioChunk({
+        type: 'key',
+        timestamp: data.time * 1000,
+        data: data.data,
+    }));
+}
+
+SpicePlaybackConn.prototype.handle_decoded_frame = function(audio_data)
+{
+    if (! this.wc_ctx)
+    {
+        audio_data.close();
+        return;
+    }
+
+    var frames = audio_data.numberOfFrames;
+    var ch = audio_data.numberOfChannels;
+    var buf = this.wc_ctx.createBuffer(ch, frames, audio_data.sampleRate);
+    /* copyTo converts to f32-planar regardless of the decoder's native
+       output format; it is the one conversion the spec guarantees. */
+    for (var c = 0; c < ch; c++)
+        audio_data.copyTo(buf.getChannelData(c), { planeIndex: c, format: 'f32-planar' });
+    audio_data.close();
+
+    this.schedule_buffer(buf);
+}
+
+SpicePlaybackConn.prototype.schedule_raw_frame = function(data)
+{
+    /* Interleaved S16LE at the negotiated rate. The payload's byte
+       offset is not guaranteed even, so copy before the Int16 view. */
+    var bytes = new Uint8Array(data);
+    var copy = new Uint8Array(bytes.length);
+    copy.set(bytes);
+    var samples = new Int16Array(copy.buffer);
+
+    var ch = this.wc_channels;
+    var frames = Math.floor(samples.length / ch);
+    if (frames < 1)
+        return;
+
+    var buf = this.wc_ctx.createBuffer(ch, frames, this.wc_frequency);
+    for (var c = 0; c < ch; c++)
+    {
+        var dest = buf.getChannelData(c);
+        for (var i = 0; i < frames; i++)
+            dest[i] = samples[i * ch + c] / 0x8000;
+    }
+    this.schedule_buffer(buf);
+}
+
+SpicePlaybackConn.prototype.schedule_buffer = function(buf)
+{
+    var ctx = this.wc_ctx;
+
+    /* While suspended the clock does not advance; scheduling against
+       it would pile every frame onto one instant, to be spat out in a
+       burst on resume. Drop until running -- the guest's audio is
+       live, not a recording to preserve. */
+    if (ctx.state !== 'running')
+    {
+        this.nudge_suspended_context();
+        return;
+    }
+
+    var now = ctx.currentTime;
+    if (! this.wc_next_time || this.wc_next_time < now + 0.02)
+        this.wc_next_time = now + WEBCODECS_LEAD_S;
+
+    var src = ctx.createBufferSource();
+    src.buffer = buf;
+    src.connect(ctx.destination);
+    src.start(this.wc_next_time);
+    this.wc_next_time += buf.duration;
+    this.appends++;
+    this.milestone("playing");
+}
+
 SpicePlaybackConn.prototype.process_channel_message = function(msg)
 {
+    /* Two ways to make sound. WebCodecs decodes each opus packet and
+       schedules the PCM into an AudioContext -- no media element, so
+       none of a media element's behaviour: no play() to be refused,
+       no duration, and no live edge for the browser to seek to. The
+       MediaSource path survives as the fallback for browsers without
+       AudioDecoder, and it is fragile on purpose-built live audio:
+       Firefox insists on seeking an unbounded stream to its end,
+       wherever that is put. */
+    if (window.AudioDecoder !== undefined)
+        return this.process_webcodecs_message(msg);
+
     if (!!!window.MediaSource)
     {
         this.log_err('MediaSource API is not available');
@@ -414,7 +658,10 @@ SpicePlaybackConn.prototype.arm_gesture_retry = function(reason)
         conn.remove_gesture_listeners();
         conn.replay_attempts = 0;
         conn.last_replay_attempt = 0;
-        conn.try_play();
+        if (conn.gesture_action)
+            conn.gesture_action();
+        else
+            conn.try_play();
     };
 
     var opts = { capture: true, passive: true };
@@ -590,6 +837,20 @@ SpicePlaybackConn.prototype.destroy_audio = function()
 SpicePlaybackConn.prototype.cleanup = function()
 {
     this.destroy_audio();
+
+    if (this.wc_decoder)
+    {
+        try { this.wc_decoder.close(); } catch (e) { }
+        this.wc_decoder = null;
+    }
+    if (this.wc_ctx)
+    {
+        this.wc_ctx.onstatechange = null;
+        this.wc_ctx.close().catch(function () { });
+        this.wc_ctx = null;
+    }
+    this.gesture_action = undefined;
+
     SpiceConn.prototype.cleanup.call(this);
 }
 
