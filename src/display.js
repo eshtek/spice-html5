@@ -114,8 +114,12 @@ SpiceDisplayConn.prototype.process_channel_message = function(msg)
 
     if (msg.type == Constants.SPICE_MSG_DISPLAY_MARK)
     {
-        // FIXME - DISPLAY_MARK not implemented (may be hard or impossible)
-        this.known_unimplemented(msg.type, "Display Mark");
+        /* The server saying the primary surface now holds a complete
+           image and may be shown. A client that renders offscreen
+           until then reveals its canvas here; this one draws straight
+           into a canvas that is already visible, so the surface has
+           been on screen all along and there is nothing to reveal.
+           Nothing to do, and not a gap in the implementation. */
         return true;
     }
 
@@ -496,7 +500,10 @@ SpiceDisplayConn.prototype.process_channel_message = function(msg)
 
     if (msg.type == Constants.SPICE_MSG_DISPLAY_INVAL_ALL_PALETTES)
     {
-        this.known_unimplemented(msg.type, "Inval All Palettes");
+        /* Drops the client's palette cache. This client has no such
+           cache -- a palettised image carries its palette with it and
+           is converted on arrival -- so there is nothing to drop.
+           Nothing to do, and not a gap in the implementation. */
         return true;
     }
 

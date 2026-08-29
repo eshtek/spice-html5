@@ -77,6 +77,11 @@ function SpiceMainConn()
     this.file_xfer_read_queue = [];
     this.ports = [];
     this.agent_caps = [0]
+
+    /* Capturing, because the console's own key handling stops plenty
+       of events from reaching the document. */
+    this.paste_listener = this.handle_browser_paste.bind(this);
+    document.addEventListener('paste', this.paste_listener, true);
 }
 
 SpiceMainConn.prototype = Object.create(SpiceConn.prototype);
@@ -345,6 +350,12 @@ SpiceMainConn.prototype.stop = function(msg)
 {
     this.state = "closing";
 
+    if (this.paste_listener)
+    {
+        document.removeEventListener('paste', this.paste_listener, true);
+        this.paste_listener = undefined;
+    }
+
     if (this.inputs)
     {
         this.inputs.cleanup();
@@ -608,17 +619,66 @@ SpiceMainConn.prototype.handle_clipboard_send = function()
 {
     DEBUG > 1 && console.log("sending clipboard data to agent");
 
-    // agent is requesting clipboard data, read it from browser clipboard and send it.
+    /* The guest asks for the clipboard when something in it pastes,
+       which is never a user gesture in this page, so reading the real
+       clipboard here is the one thing browsers will not allow. Chrome
+       can be granted the permission and then answers; Firefox has no
+       equivalent grant for a page -- readText() is refused outright,
+       which is why it never prompts and this failed every time.
+
+       Whatever the last paste into the console put in the cache is
+       therefore the answer, and it is the right one: the user pressing
+       ctrl-V is exactly the moment they meant to hand the clipboard
+       over, and the paste event carries the text without a permission
+       anywhere. Fall back to readText() for a guest that asks before
+       any paste, where Chrome can still answer. */
+    if (this.clipboard_cache !== undefined)
+    {
+        this.send_clipboard_text(this.clipboard_cache);
+        return;
+    }
+
     if (navigator.clipboard && navigator.clipboard.readText)
     {
         navigator.clipboard.readText().then(text => {
-            const type = Constants.VD_AGENT_CLIPBOARD_UTF8_TEXT;
-            const clipboard_msg = new Messages.SpiceMsgClipboardSend(type, text, this.agent_caps);
-            this.send_agent_message(Constants.VD_AGENT_CLIPBOARD, clipboard_msg);
+            this.send_clipboard_text(text);
         }).catch(err => {
-            console.log("Failed to read clipboard:", err);
+            /* Once per connection: the guest re-asks on every paste
+               attempt, and a browser that refused once refuses always. */
+            if (! this.clipboard_read_refused)
+            {
+                this.clipboard_read_refused = true;
+                DEBUG > 0 && console.log("Cannot read the clipboard directly (" + err +
+                    "); paste into the console with ctrl-V and the guest will receive it.");
+            }
         });
     }
+}
+
+SpiceMainConn.prototype.send_clipboard_text = function(text)
+{
+    const type = Constants.VD_AGENT_CLIPBOARD_UTF8_TEXT;
+    const clipboard_msg = new Messages.SpiceMsgClipboardSend(type, text, this.agent_caps);
+    this.send_agent_message(Constants.VD_AGENT_CLIPBOARD, clipboard_msg);
+}
+
+/* A paste anywhere in the console. The browser hands over the text
+   with no permission involved, so cache it and tell the guest the
+   clipboard changed; the guest then requests it through the normal
+   path and gets it from the cache. */
+SpiceMainConn.prototype.handle_browser_paste = function(e)
+{
+    if (! e.clipboardData)
+        return;
+
+    const text = e.clipboardData.getData('text/plain');
+    if (! text)
+        return;
+
+    const changed = this.clipboard_cache !== text;
+    this.clipboard_cache = text;
+    if (changed)
+        this.send_clipboard_grab();
 }
 
 SpiceMainConn.prototype.send_clipboard_grab = function()
