@@ -286,7 +286,14 @@ SpiceMainConn.prototype.process_channel_message = function(msg)
             return true;
         }
 
-        return false;
+        /* An agent message we do not act on is still an agent message.
+           Returning false sent it back as an unhandled main-channel
+           message, so the console reported "Unknown message type 109"
+           -- naming the agent-data envelope rather than the thing
+           inside it, which is the part worth knowing. Name that once
+           per type instead. */
+        this.report_unhandled_agent_message(agent_data.type);
+        return true;
     }
 
     if (msg.type == Constants.SPICE_MSG_MAIN_MIGRATE_SWITCH_HOST)
@@ -535,6 +542,33 @@ SpiceMainConn.prototype.file_xfer_completed = function(file_xfer_task, error)
     file_xfer_task.remove_progressbar();
 
     delete this.file_xfer_tasks[file_xfer_task.id];
+}
+
+/* The guest agent sends more than this client acts on -- a reply
+   acknowledging our capabilities, mouse state under server mouse mode,
+   monitor and display configuration. None need handling, but each was
+   arriving as an anonymous "unknown message" on the main channel. */
+SpiceMainConn.prototype.report_unhandled_agent_message = function(type)
+{
+    var names = {};
+    names[Constants.VD_AGENT_MOUSE_STATE] = "Mouse State";
+    names[Constants.VD_AGENT_MONITORS_CONFIG] = "Monitors Config";
+    names[Constants.VD_AGENT_REPLY] = "Reply";
+    names[Constants.VD_AGENT_DISPLAY_CONFIG] = "Display Config";
+    names[Constants.VD_AGENT_FILE_XFER_START] = "File Xfer Start";
+    names[Constants.VD_AGENT_FILE_XFER_DATA] = "File Xfer Data";
+    names[Constants.VD_AGENT_CLIENT_DISCONNECTED] = "Client Disconnected";
+    names[Constants.VD_AGENT_MAX_CLIPBOARD] = "Max Clipboard";
+
+    if (! this.reported_agent_types)
+        this.reported_agent_types = {};
+    if (this.reported_agent_types[type])
+        return;
+    this.reported_agent_types[type] = true;
+
+    DEBUG > 0 && console.log("Agent message not handled: " +
+                             (names[type] || "type " + type) +
+                             " [ further notices suppressed ]");
 }
 
 SpiceMainConn.prototype.handle_clipboard_grab = function()
