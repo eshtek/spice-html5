@@ -96,7 +96,8 @@ SpicePlaybackConn.prototype.check_playing = function()
     if (this.data_msgs < 25)
         return;
 
-    var playing = this.audio && ! this.audio.paused && this.audio.currentTime > 0;
+    var playing = this.audio && ! this.audio.paused &&
+                  Number.isFinite(this.audio.currentTime) && this.audio.currentTime > 0;
     if (playing)
     {
         this.milestone("playing");
@@ -476,6 +477,24 @@ SpicePlaybackConn.prototype.skip_buffer_gap = function()
     var t = this.audio.currentTime;
     var epsilon = 0.01;
     var next = null;
+
+    /* A playhead that is not a finite position can never decode a
+       frame, and nothing lies ahead of it to skip to, so the gap
+       search below would give up and leave the element stranded
+       forever. Firefox parks currentTime at Infinity on a stream
+       whose duration is unknown -- which ours is, deliberately: a
+       live stream has no duration to declare and MediaSource reports
+       Infinity for it. Put the playhead back at the start of the
+       audio we actually hold. */
+    if (! Number.isFinite(t))
+    {
+        console.log("Playback: playhead was at " + t +
+                    ", which can never decode; moving it to the buffered audio at " +
+                    this.audio.buffered.start(0));
+        this.audio.currentTime = this.audio.buffered.start(0) + epsilon;
+        this.gaps_skipped = (this.gaps_skipped || 0) + 1;
+        return;
+    }
 
     for (var i = 0; i < buffered.length; i++)
     {
