@@ -158,6 +158,15 @@ SpiceConn.prototype =
                 caps |= (1 << Constants.SPICE_PLAYBACK_CAP_OPUS);
             msg.channel_caps.push(caps);
         }
+        else if (msg.channel_type == Constants.SPICE_CHANNEL_RECORD)
+        {
+            var caps = 0;
+            /* Committing to opus additionally requires the server's reply
+               caps and a probed encoder; see record.js. */
+            if (window.AudioEncoder !== undefined)
+                caps |= (1 << Constants.SPICE_RECORD_CAP_OPUS);
+            msg.channel_caps.push(caps);
+        }
         else if (msg.channel_type == Constants.SPICE_CHANNEL_MAIN)
         {
             msg.channel_caps.push(

@@ -167,6 +167,15 @@ export var Constants = {
   SPICE_MSG_PLAYBACK_MUTE             : 106,
   SPICE_MSG_PLAYBACK_LATENCY          : 107,
 
+  SPICE_MSG_RECORD_START              : 101,
+  SPICE_MSG_RECORD_STOP               : 102,
+  SPICE_MSG_RECORD_VOLUME             : 103,
+  SPICE_MSG_RECORD_MUTE               : 104,
+
+  SPICE_MSGC_RECORD_DATA              : 101,
+  SPICE_MSGC_RECORD_MODE              : 102,
+  SPICE_MSGC_RECORD_START_MARK        : 103,
+
   SPICE_MSG_SPICEVMC_DATA             : 101,
   SPICE_MSG_PORT_INIT                 : 201,
   SPICE_MSG_PORT_EVENT                : 202,
@@ -180,6 +189,12 @@ export var Constants = {
   SPICE_PLAYBACK_CAP_VOLUME           : 1,
   SPICE_PLAYBACK_CAP_LATENCY          : 2,
   SPICE_PLAYBACK_CAP_OPUS             : 3,
+
+  /* Note the record channel has no LATENCY cap, so OPUS is 2 here where it
+     is 3 for playback. */
+  SPICE_RECORD_CAP_CELT_0_5_1         : 0,
+  SPICE_RECORD_CAP_VOLUME             : 1,
+  SPICE_RECORD_CAP_OPUS               : 2,
 
   SPICE_MAIN_CAP_SEMI_SEAMLESS_MIGRATE  : 0,
   SPICE_MAIN_CAP_NAME_AND_UUID          : 1,

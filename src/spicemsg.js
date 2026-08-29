@@ -1024,7 +1024,123 @@ SpiceMsgPlaybackStart.prototype =
     },
 }
 
+/* Same layout as SpiceMsgPlaybackStart minus the trailing time field. */
+function SpiceMsgRecordStart(a, at)
+{
+    this.from_buffer(a, at);
+}
 
+SpiceMsgRecordStart.prototype =
+{
+    from_buffer: function(a, at, mb)
+    {
+        at = at || 0;
+        var dv = new SpiceDataView(a);
+        this.channels = dv.getUint32(at, true); at += 4;
+        this.format = dv.getUint16(at, true); at += 2;
+        this.frequency = dv.getUint32(at, true); at += 4;
+        return at;
+    },
+}
+
+function SpiceMsgcRecordMode(time, mode)
+{
+    this.time = time;
+    this.mode = mode;
+}
+
+SpiceMsgcRecordMode.prototype =
+{
+    to_buffer: function(a, at)
+    {
+        at = at || 0;
+        var dv = new SpiceDataView(a);
+        dv.setUint32(at, this.time, true); at += 4;
+        /* audio_data_mode is an enum16 on the wire; the optional trailing
+           codec data bytes are unused for both raw and opus. */
+        dv.setUint16(at, this.mode, true); at += 2;
+        return at;
+    },
+    buffer_size: function()
+    {
+        return 6;
+    }
+}
+
+function SpiceMsgcRecordStartMark(time)
+{
+    this.time = time;
+}
+
+SpiceMsgcRecordStartMark.prototype =
+{
+    to_buffer: function(a, at)
+    {
+        at = at || 0;
+        var dv = new SpiceDataView(a);
+        dv.setUint32(at, this.time, true); at += 4;
+        return at;
+    },
+    buffer_size: function()
+    {
+        return 4;
+    }
+}
+
+function SpiceMsgcRecordData(time, data)
+{
+    this.time = time;
+    this.data = data;  /* Uint8Array */
+}
+
+SpiceMsgcRecordData.prototype =
+{
+    to_buffer: function(a, at)
+    {
+        at = at || 0;
+        var dv = new SpiceDataView(a);
+        dv.setUint32(at, this.time, true); at += 4;
+        new Uint8Array(a).set(this.data, at);
+        return at + this.data.byteLength;
+    },
+    buffer_size: function()
+    {
+        return 4 + this.data.byteLength;
+    }
+}
+
+
+function SpiceMsgMainMultiMediaTime(a, at)
+{
+    this.from_buffer(a, at);
+}
+
+SpiceMsgMainMultiMediaTime.prototype =
+{
+    from_buffer: function(a, at, mb)
+    {
+        at = at || 0;
+        var dv = new SpiceDataView(a);
+        this.time = dv.getUint32(at, true); at += 4;
+        return at;
+    },
+}
+
+function SpiceMsgCursorMove(a, at)
+{
+    this.from_buffer(a, at);
+}
+
+SpiceMsgCursorMove.prototype =
+{
+    from_buffer: function(a, at, mb)
+    {
+        at = at || 0;
+        var dv = new SpiceDataView(a);
+        this.position = new SpicePoint16;
+        return this.position.from_dv(dv, at, mb);
+    },
+}
 
 function SpiceMsgCursorSet(a, at)
 {
@@ -1453,9 +1569,15 @@ export {
   SpiceMsgInputsInit,
   SpiceMsgInputsKeyModifiers,
   SpiceMsgCursorInit,
+  SpiceMsgCursorMove,
+  SpiceMsgMainMultiMediaTime,
   SpiceMsgPlaybackData,
   SpiceMsgPlaybackMode,
   SpiceMsgPlaybackStart,
+  SpiceMsgRecordStart,
+  SpiceMsgcRecordMode,
+  SpiceMsgcRecordStartMark,
+  SpiceMsgcRecordData,
   SpiceMsgCursorSet,
   SpiceMsgcMousePosition,
   SpiceMsgcMouseMotion,
