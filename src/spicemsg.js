@@ -1110,6 +1110,22 @@ SpiceMsgcRecordData.prototype =
 }
 
 
+function SpiceMsgCursorMove(a, at)
+{
+    this.from_buffer(a, at);
+}
+
+SpiceMsgCursorMove.prototype =
+{
+    from_buffer: function(a, at, mb)
+    {
+        at = at || 0;
+        var dv = new SpiceDataView(a);
+        this.position = new SpicePoint16;
+        return this.position.from_dv(dv, at, mb);
+    },
+}
+
 function SpiceMsgCursorSet(a, at)
 {
     this.from_buffer(a, at);
@@ -1537,6 +1553,7 @@ export {
   SpiceMsgInputsInit,
   SpiceMsgInputsKeyModifiers,
   SpiceMsgCursorInit,
+  SpiceMsgCursorMove,
   SpiceMsgPlaybackData,
   SpiceMsgPlaybackMode,
   SpiceMsgPlaybackStart,
