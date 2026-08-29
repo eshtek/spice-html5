@@ -23,6 +23,7 @@ import { Constants } from './enums.js';
 import { DEBUG } from './utils.js';
 import {
   SpiceMsgCursorInit,
+  SpiceMsgCursorMove,
   SpiceMsgCursorSet,
 } from './spicemsg.js';
 import { SpiceSimulateCursor } from './simulatecursor.js';
@@ -71,20 +72,29 @@ SpiceCursorConn.prototype.process_channel_message = function(msg)
         if (cursor_set.flags > 0)
             this.log_warn("FIXME: No support for cursor flags " + cursor_set.flags);
 
-        if (cursor_set.cursor.header.type != Constants.SPICE_CURSOR_TYPE_ALPHA)
-        {
-            this.log_warn("FIXME: No support for cursor type " + cursor_set.cursor.header.type);
-            return false;
-        }
-
-        this.set_cursor(cursor_set.cursor);
+        /* An unconvertible shape is not an unhandled message: returning
+           false here made the base class log a second, misleading
+           "Unknown message type 103" for every one of these. */
+        if (! this.set_cursor(cursor_set.cursor))
+            this.warn_once_per_cursor_type(cursor_set.cursor.header.type);
 
         return true;
     }
 
     if (msg.type == Constants.SPICE_MSG_CURSOR_MOVE)
     {
-        this.known_unimplemented(msg.type, "Cursor Move");
+        /* Only meaningful under server mouse mode, where the server owns
+           the pointer position and we track it for inputs. Under client
+           mode the browser draws the pointer and already knows where it
+           is, so there is nothing to do -- but it is handled either way,
+           rather than reported as unimplemented on every move. */
+        var cursor_move = new SpiceMsgCursorMove(msg.data);
+        if (this.parent && this.parent.inputs &&
+            this.parent.inputs.mouse_mode == Constants.SPICE_MOUSE_MODE_SERVER)
+        {
+            this.parent.inputs.mousex = cursor_move.position.x;
+            this.parent.inputs.mousey = cursor_move.position.y;
+        }
         return true;
     }
 
@@ -124,9 +134,126 @@ SpiceCursorConn.prototype.process_channel_message = function(msg)
     return false;
 }
 
+/* One warning per shape type per connection. Windows sends a cursor on
+   nearly every hover, so an unconvertible type used to produce an
+   unbounded stream of identical warnings. */
+SpiceCursorConn.prototype.warn_once_per_cursor_type = function(type)
+{
+    if (! this.warned_cursor_types)
+        this.warned_cursor_types = {};
+    if (this.warned_cursor_types[type])
+        return;
+    this.warned_cursor_types[type] = true;
+    this.log_warn("No support for cursor type " + type + "; leaving the cursor as it was.");
+}
+
+/* SPICE cursor shapes to the RGBA the PNG writer expects.
+   Returns null for a type we cannot convert.
+   Layouts follow spice-gtk's set_cursor() (src/channel-cursor.c). */
+function cursor_to_rgba(header, data)
+{
+    var width = header.width;
+    var height = header.height;
+    var pixels = width * height;
+    var u8 = new Uint8Array(data);
+    var rgba = new Uint8Array(pixels * 4);
+    var i, at;
+
+    /* SPICE ships 32bpp shapes as native-endian ARGB, which on every
+       platform we run on is B,G,R,A in memory; PNG wants R,G,B,A. The
+       swap is invisible on the black/white/transparent cursors that
+       dominate, which is why it went unnoticed, but colour cursors came
+       out with red and blue exchanged. */
+    if (header.type == Constants.SPICE_CURSOR_TYPE_ALPHA)
+    {
+        if (u8.length < pixels * 4)
+            return null;
+        for (i = 0, at = 0; i < pixels; i++, at += 4)
+        {
+            rgba[at]     = u8[at + 2];
+            rgba[at + 1] = u8[at + 1];
+            rgba[at + 2] = u8[at];
+            rgba[at + 3] = u8[at + 3];
+        }
+        return rgba;
+    }
+
+    /* Two 1bpp masks, AND then XOR, each row padded to a byte. The four
+       combinations are the classic ones:
+         AND=1 XOR=0  transparent
+         AND=1 XOR=1  invert the screen
+         AND=0 XOR=0  black
+         AND=0 XOR=1  white
+       A CSS cursor cannot invert what is under it, so those pixels are
+       drawn black -- the same choice every other HTML SPICE/VNC client
+       makes. It is what Windows' I-beam and resize cursors use, and
+       black-on-transparent reads correctly against the light backgrounds
+       those appear over. */
+    if (header.type == Constants.SPICE_CURSOR_TYPE_MONO)
+    {
+        var bpl = (width + 7) >> 3;
+        if (u8.length < bpl * height * 2)
+            return null;
+        for (var y = 0; y < height; y++)
+        {
+            for (var x = 0; x < width; x++)
+            {
+                var byte_at = y * bpl + (x >> 3);
+                var bit = 0x80 >> (x & 7);
+                var and_bit = (u8[byte_at] & bit) != 0;
+                var xor_bit = (u8[bpl * height + byte_at] & bit) != 0;
+
+                at = (y * width + x) * 4;
+                if (and_bit && ! xor_bit)
+                    continue;               /* transparent; rgba is zeroed */
+
+                var lum = xor_bit && ! and_bit ? 255 : 0;
+                rgba[at] = rgba[at + 1] = rgba[at + 2] = lum;
+                rgba[at + 3] = 255;
+            }
+        }
+        return rgba;
+    }
+
+    /* 32bpp BGRA followed by a 1bpp AND mask: mask set means the pixel
+       is transparent. spice-gtk renders the "white pixel that is also
+       masked" case as a dim checkerboard rather than a hole, because
+       that combination is how shapes encode invert; do the same. */
+    if (header.type == Constants.SPICE_CURSOR_TYPE_COLOR32)
+    {
+        var mask_at = pixels * 4;
+        if (u8.length < mask_at + ((width + 7) >> 3) * height)
+            return null;
+        for (i = 0, at = 0; i < pixels; i++, at += 4)
+        {
+            var masked = (u8[mask_at + (i >> 3)] & (0x80 >> (i & 7))) != 0;
+            var white = u8[at] == 0xff && u8[at + 1] == 0xff && u8[at + 2] == 0xff;
+            if (masked && white)
+            {
+                var dark = (((i % width) ^ ((i / width) | 0)) & 1) != 0;
+                rgba[at] = rgba[at + 1] = rgba[at + 2] = dark ? 0x30 : 0x50;
+                rgba[at + 3] = dark ? 0xc0 : 0x30;
+                continue;
+            }
+            rgba[at]     = u8[at + 2];
+            rgba[at + 1] = u8[at + 1];
+            rgba[at + 2] = u8[at];
+            rgba[at + 3] = masked ? 0 : 255;
+        }
+        return rgba;
+    }
+
+    return null;
+}
+
+/* True if the shape was converted and applied. */
 SpiceCursorConn.prototype.set_cursor = function(cursor)
 {
-    var pngstr = create_rgba_png(cursor.header.width, cursor.header.height, cursor.data);
+    var rgba = cursor_to_rgba(cursor.header, cursor.data);
+    if (! rgba)
+        return false;
+
+    var pngstr = create_rgba_png(cursor.header.width, cursor.header.height, rgba);
     var curstr = 'url(data:image/png,' + pngstr + ') ' +
         cursor.header.hot_spot_x + ' ' + cursor.header.hot_spot_y + ", default";
     var screen = document.getElementById(this.parent.screen_id);
@@ -134,6 +261,7 @@ SpiceCursorConn.prototype.set_cursor = function(cursor)
     screen.style.cursor = curstr;
     if (window.getComputedStyle(screen, null).cursor == 'auto')
         SpiceSimulateCursor.simulate_cursor(this, cursor, screen, pngstr);
+    return true;
 }
 
 export {
