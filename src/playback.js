@@ -119,6 +119,18 @@ SpicePlaybackConn.prototype.check_playing = function()
        a jump moves it. */
     this.skip_buffer_gap();
 
+    /* Not paused, no error, seconds of audio buffered, and the
+       playhead has not moved: a browser can block playback without
+       ever pausing the element or rejecting play(). Firefox does
+       exactly this -- it accepts play() and leaves the media
+       suspended until a real user gesture -- and because the promise
+       resolved and paused stayed false, neither the rejection path
+       nor the pause path armed the one thing that recovers it. Ask
+       for the gesture on the evidence that matters: the playhead is
+       not advancing. */
+    if (this.audio && ! this.audio.paused && ! this.gesture_listener)
+        this.arm_gesture_retry("playback is not advancing");
+
     this.log_err("Audio is arriving but not playing. " + this.status());
 }
 
@@ -375,24 +387,38 @@ SpicePlaybackConn.prototype.try_play = function()
         if (e && e.name === 'AbortError')
             return;
 
-        if (! conn.gesture_listener)
-        {
-            /* Reported unconditionally: a refused autoplay is the most
-               common reason a console is connected and mute, and gating
-               it behind a debug flag hid exactly the case a user is
-               trying to explain. */
-            console.log("Playback: autoplay refused (" + (e && e.name) +
-                        "); audio will start on the first click or keypress.");
-            conn.gesture_listener = function ()
-            {
-                conn.remove_gesture_listeners();
-                conn.try_play();
-            };
-            var opts = { capture: true, passive: true };
-            document.addEventListener('pointerdown', conn.gesture_listener, opts);
-            document.addEventListener('keydown', conn.gesture_listener, opts);
-        }
+        conn.arm_gesture_retry("autoplay refused (" + (e && e.name) + ")");
     });
+}
+
+/* Wait for the user to touch the page, then start playback from
+   inside their gesture, which is the one context every autoplay
+   policy accepts. Capturing and passive so the gesture is seen
+   wherever it lands -- the console's own handlers stop plenty of
+   events from bubbling. */
+SpicePlaybackConn.prototype.arm_gesture_retry = function(reason)
+{
+    if (this.gesture_listener)
+        return;
+
+    /* Reported unconditionally: a blocked autoplay is the most common
+       reason a console is connected and mute, and gating it behind a
+       debug flag hid exactly the case a user is trying to explain. */
+    console.log("Playback: " + reason +
+                "; audio will start on the first click or keypress.");
+
+    var conn = this;
+    this.gesture_listener = function ()
+    {
+        conn.remove_gesture_listeners();
+        conn.replay_attempts = 0;
+        conn.last_replay_attempt = 0;
+        conn.try_play();
+    };
+
+    var opts = { capture: true, passive: true };
+    document.addEventListener('pointerdown', this.gesture_listener, opts);
+    document.addEventListener('keydown', this.gesture_listener, opts);
 }
 
 /* Long enough that an application cycling its output device around

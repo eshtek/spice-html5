@@ -300,7 +300,9 @@ function keycode_to_end_scan(keyCode, code)
 function dump_media_element(m)
 {
     var ret =
-            "[networkState " + m.networkState +
+            "[currentTime " + m.currentTime +
+            "|muted " + m.muted +
+            "|networkState " + m.networkState +
             "|readyState " + m.readyState +
             "|error " + m.error +
             "|seeking " + m.seeking +
