@@ -1110,6 +1110,22 @@ SpiceMsgcRecordData.prototype =
 }
 
 
+function SpiceMsgMainMultiMediaTime(a, at)
+{
+    this.from_buffer(a, at);
+}
+
+SpiceMsgMainMultiMediaTime.prototype =
+{
+    from_buffer: function(a, at, mb)
+    {
+        at = at || 0;
+        var dv = new SpiceDataView(a);
+        this.time = dv.getUint32(at, true); at += 4;
+        return at;
+    },
+}
+
 function SpiceMsgCursorMove(a, at)
 {
     this.from_buffer(a, at);
@@ -1554,6 +1570,7 @@ export {
   SpiceMsgInputsKeyModifiers,
   SpiceMsgCursorInit,
   SpiceMsgCursorMove,
+  SpiceMsgMainMultiMediaTime,
   SpiceMsgPlaybackData,
   SpiceMsgPlaybackMode,
   SpiceMsgPlaybackStart,

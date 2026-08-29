@@ -99,6 +99,7 @@ SpicePlaybackConn.prototype.check_playing = function()
     if (playing)
     {
         this.milestone("playing");
+        this.remove_gesture_listeners();
         return;
     }
 
@@ -106,6 +107,12 @@ SpicePlaybackConn.prototype.check_playing = function()
     if (this.last_stall_report && now - this.last_stall_report < 10000)
         return;
     this.last_stall_report = now;
+
+    /* Backstop for a pause we never saw an event for. The event
+       handler below is the primary path; this one is spaced by the
+       report throttle so the attempts are seconds apart rather than
+       three in the same millisecond. */
+    this.retry_paused_playback();
 
     this.log_err("Audio is arriving but not playing. " + this.status());
 }
@@ -164,6 +171,8 @@ SpicePlaybackConn.prototype.process_channel_message = function(msg)
             this.media_source.addEventListener('sourceclosed', handle_source_closed, false);
 
             this.bytes_written = 0;
+            this.tearing_down = false;
+            this.replay_attempts = 0;
             this.milestone("audio-element");
 
             /* sourceopen is the link that fails most quietly: without it
@@ -331,8 +340,16 @@ SpicePlaybackConn.prototype.try_play = function()
 
     p.then(function ()
     {
+        /* Deliberately does NOT drop the gesture listeners. A resolved
+           play() is not proof of playback: Firefox resolves it while
+           the element is still inaudible -- an empty MediaSource has no
+           audio track yet -- and applies its autoplay policy later, the
+           moment the opus track arrives and the element would make
+           sound, pausing it then. Treating resolution as success tore
+           down the retry and left the console mute with a full buffer,
+           no error, and a promise that had said yes. They are dropped
+           in check_playing once the element is genuinely advancing. */
         conn.milestone("play-accepted");
-        conn.remove_gesture_listeners();
     })
     .catch(function (e)
     {
@@ -361,6 +378,24 @@ SpicePlaybackConn.prototype.try_play = function()
     });
 }
 
+/* A browser that paused us after accepting play() gets another
+   attempt. If it refuses this one it does so through the promise,
+   which arms the gesture retry, so this is bounded: a browser that
+   will not start without a gesture must not be asked forever. */
+SpicePlaybackConn.prototype.retry_paused_playback = function()
+{
+    if (! this.audio || ! this.audio.paused || this.gesture_listener || this.tearing_down)
+        return;
+
+    this.replay_attempts = (this.replay_attempts || 0) + 1;
+    if (this.replay_attempts > 3)
+        return;
+
+    console.log("Playback: element paused with audio buffered; retrying play (" +
+                this.replay_attempts + "/3)");
+    this.try_play();
+}
+
 SpicePlaybackConn.prototype.remove_gesture_listeners = function()
 {
     if (! this.gesture_listener)
@@ -377,6 +412,11 @@ SpicePlaybackConn.prototype.destroy_audio = function()
 
     if (! this.audio)
         return;
+
+    /* Tearing the element down pauses it; without this the pause
+       handler would read that as a browser stopping us and try to
+       restart an element being disposed of. */
+    this.tearing_down = true;
 
     if (this.audio.parentNode)
         this.audio.parentNode.removeChild(this.audio);
@@ -618,9 +658,24 @@ function handle_audio_element_error()
               (err.message ? ': ' + err.message : ''));
 }
 
+/* The moment Firefox's autoplay policy takes effect: it accepts play()
+   on a still-silent element, then pauses it here, once the opus track
+   arrives and the element would actually make sound. Nothing else
+   pauses this element -- there is no UI for it -- so an unsolicited
+   pause means a browser stopped us and is worth one more attempt. */
+function handle_audio_element_pause()
+{
+    var p = this.spiceconn;
+    if (! p || ! p.audio)
+        return;
+    p.milestone("paused-by-browser");
+    p.retry_paused_playback();
+}
+
 function listen_for_audio_events(spiceconn)
 {
     spiceconn.audio.addEventListener('error', handle_audio_element_error);
+    spiceconn.audio.addEventListener('pause', handle_audio_element_pause);
 
     var audio_0_events = [
         "abort", "error"
