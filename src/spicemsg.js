@@ -26,7 +26,6 @@
 **--------------------------------------------------------------------------*/
 
 import { Constants } from './enums.js';
-import { SpiceDataView } from './spicedataview.js';
 import { create_rsa_from_mb } from './ticket.js';
 import {
   SpiceChannelId,
@@ -59,7 +58,7 @@ SpiceLinkHeader.prototype =
     from_buffer: function(a, at)
     {
         at = at || 0;
-        var dv = new SpiceDataView(a);
+        var dv = new DataView(a);
         this.magic = "";
         for (var i = 0; i < 4; i++)
             this.magic += String.fromCharCode(dv.getUint8(at + i));
@@ -73,7 +72,7 @@ SpiceLinkHeader.prototype =
     to_buffer: function(a, at)
     {
         at = at || 0;
-        var dv = new SpiceDataView(a);
+        var dv = new DataView(a);
         for (var i = 0; i < 4; i++)
             dv.setUint8(at + i, this.magic.charCodeAt(i));
         at += 4;
@@ -107,7 +106,7 @@ SpiceLinkMess.prototype =
         at = at || 0;
         var i;
         var orig_at = at;
-        var dv = new SpiceDataView(a);
+        var dv = new DataView(a);
         this.connection_id = dv.getUint32(at, true); at += 4;
         this.channel_type = dv.getUint8(at, true); at++;
         this.channel_id = dv.getUint8(at, true); at++;
@@ -134,7 +133,7 @@ SpiceLinkMess.prototype =
         at = at || 0;
         var orig_at = at;
         var i;
-        var dv = new SpiceDataView(a);
+        var dv = new DataView(a);
         dv.setUint32(at, this.connection_id, true); at += 4;
         dv.setUint8(at, this.channel_type, true); at++;
         dv.setUint8(at, this.channel_id, true); at++;
@@ -176,7 +175,7 @@ SpiceLinkReply.prototype =
         at = at || 0;
         var i;
         var orig_at = at;
-        var dv = new SpiceDataView(a);
+        var dv = new DataView(a);
         this.error = dv.getUint32(at, true); at += 4;
 
         this.pub_key = create_rsa_from_mb(a, at);
@@ -213,7 +212,7 @@ SpiceLinkAuthTicket.prototype =
     {
         at = at || 0;
         var i;
-        var dv = new SpiceDataView(a);
+        var dv = new DataView(a);
         dv.setUint32(at, this.auth_mechanism, true); at += 4;
         for (i = 0; i < Constants.SPICE_TICKET_KEY_PAIR_LENGTH / 8; i++)
         {
@@ -242,7 +241,7 @@ SpiceLinkAuthReply.prototype =
     from_buffer: function(a, at)
     {
         at = at || 0;
-        var dv = new SpiceDataView(a);
+        var dv = new DataView(a);
         this.auth_code = dv.getUint32(at, true); at += 4;
     },
     buffer_size: function()
@@ -266,7 +265,7 @@ SpiceMiniData.prototype =
     {
         at = at || 0;
         var i;
-        var dv = new SpiceDataView(a);
+        var dv = new DataView(a);
         this.type = dv.getUint16(at, true); at += 2;
         this.size = dv.getUint32(at, true); at += 4;
         if (a.byteLength > at)
@@ -279,7 +278,7 @@ SpiceMiniData.prototype =
     {
         at = at || 0;
         var i;
-        var dv = new SpiceDataView(a);
+        var dv = new DataView(a);
         dv.setUint16(at, this.type, true); at += 2;
         dv.setUint32(at, this.data ? this.data.byteLength : 0, true); at += 4;
         if (this.data && this.data.byteLength > 0)
@@ -319,7 +318,7 @@ SpiceMsgChannels.prototype =
     {
         at = at || 0;
         var i;
-        var dv = new SpiceDataView(a);
+        var dv = new DataView(a);
         this.num_of_channels = dv.getUint32(at, true); at += 4;
         for (i = 0; i < this.num_of_channels; i++)
         {
@@ -346,7 +345,7 @@ SpiceMsgClipboardGrab.prototype =
     to_buffer: function(a, at)
     {
         at = at || 0;
-        var dv = new SpiceDataView(a);
+        var dv = new DataView(a);
         if (this.has_clipboard_selection)
         {
             dv.setUint32(at, 0, true); at += 4;
@@ -388,7 +387,7 @@ SpiceMsgClipboardRequest.prototype =
     to_buffer: function(a, at)
     {
         at = at || 0;
-        var dv = new SpiceDataView(a);
+        var dv = new DataView(a);
         if (this.has_clipboard_selection)
         {
             dv.setUint32(at, 0, true); at += 4;
@@ -414,7 +413,7 @@ SpiceMsgClipboardSend.prototype =
     to_buffer: function(a, at)
     {
         at = at || 0;
-        const dv = new SpiceDataView(a);
+        const dv = new DataView(a);
         if (this.has_clipboard_selection)
         {
             dv.setUint32(at, 0, true); at += 4;
@@ -441,7 +440,7 @@ SpiceMsgMainInit.prototype =
     from_buffer: function(a, at)
     {
         at = at || 0;
-        var dv = new SpiceDataView(a);
+        var dv = new DataView(a);
         this.session_id = dv.getUint32(at, true); at += 4;
         this.display_channels_hint = dv.getUint32(at, true); at += 4;
         this.supported_mouse_modes = dv.getUint32(at, true); at += 4;
@@ -463,7 +462,7 @@ SpiceMsgMainMouseMode.prototype =
     from_buffer: function(a, at)
     {
         at = at || 0;
-        var dv = new SpiceDataView(a);
+        var dv = new DataView(a);
         this.supported_modes = dv.getUint16(at, true); at += 2;
         this.current_mode = dv.getUint16(at, true); at += 2;
     },
@@ -479,10 +478,10 @@ SpiceMsgMainAgentData.prototype =
     from_buffer: function(a, at)
     {
         at = at || 0;
-        var dv = new SpiceDataView(a);
+        var dv = new DataView(a);
         this.protocol = dv.getUint32(at, true); at += 4;
         this.type = dv.getUint32(at, true); at += 4;
-        this.opaque = dv.getUint64(at, true); at += 8;
+        this.opaque = dv.getBigUint64(at, true); at += 8;
         this.size = dv.getUint32(at, true); at += 4;
         if (a.byteLength > at)
         {
@@ -502,7 +501,7 @@ SpiceMsgMainAgentTokens.prototype =
     from_buffer: function(a, at)
     {
         at = at || 0;
-        var dv = new SpiceDataView(a);
+        var dv = new DataView(a);
         this.num_tokens = dv.getUint32(at, true); at += 4;
     },
 }
@@ -517,7 +516,7 @@ SpiceMsgSetAck.prototype =
     from_buffer: function(a, at)
     {
         at = at || 0;
-        var dv = new SpiceDataView(a);
+        var dv = new DataView(a);
         this.generation = dv.getUint32(at, true); at += 4;
         this.window = dv.getUint32(at, true); at += 4;
     },
@@ -533,7 +532,7 @@ SpiceMsgcAckSync.prototype =
     to_buffer: function(a, at)
     {
         at = at || 0;
-        var dv = new SpiceDataView(a);
+        var dv = new DataView(a);
         dv.setUint32(at, this.generation, true); at += 4;
     },
     buffer_size: function()
@@ -552,7 +551,7 @@ SpiceMsgcMainMouseModeRequest.prototype =
     to_buffer: function(a, at)
     {
         at = at || 0;
-        var dv = new SpiceDataView(a);
+        var dv = new DataView(a);
         dv.setUint16(at, this.mode, true); at += 2;
     },
     buffer_size: function()
@@ -571,7 +570,7 @@ SpiceMsgcMainAgentStart.prototype =
     to_buffer: function(a, at)
     {
         at = at || 0;
-        var dv = new SpiceDataView(a);
+        var dv = new DataView(a);
         dv.setUint32(at, this.num_tokens, true); at += 4;
     },
     buffer_size: function()
@@ -584,7 +583,7 @@ function SpiceMsgcMainAgentData(type, data)
 {
     this.protocol = Constants.VD_AGENT_PROTOCOL;
     this.type = type;
-    this.opaque = 0;
+    this.opaque = 0n;
     this.size = data.buffer_size();
     this.data = data;
 }
@@ -594,10 +593,10 @@ SpiceMsgcMainAgentData.prototype =
     to_buffer: function(a, at)
     {
         at = at || 0;
-        var dv = new SpiceDataView(a);
+        var dv = new DataView(a);
         dv.setUint32(at, this.protocol, true); at += 4;
         dv.setUint32(at, this.type, true); at += 4;
-        dv.setUint64(at, this.opaque, true); at += 8;
+        dv.setBigUint64(at, this.opaque, true); at += 8;
         dv.setUint32(at, this.size, true); at += 4;
         this.data.to_buffer(a, at);
     },
@@ -623,14 +622,14 @@ VDAgentAnnounceCapabilities.prototype =
     to_buffer: function(a, at)
     {
         at = at || 0;
-        var dv = new SpiceDataView(a);
+        var dv = new DataView(a);
         dv.setUint32(at, this.request, true); at += 4;
         dv.setUint32(at, this.caps, true); at += 4;
     },
     from_buffer: function(a, at)
     {
         at = at || 0;
-        var dv = new SpiceDataView(a);
+        var dv = new DataView(a);
         this.request = dv.getUint32(at, true); at += 4;
         this.caps = dv.getUint32(at, true); at += 4;
         return at;
@@ -657,7 +656,7 @@ VDAgentMonitorsConfig.prototype =
     to_buffer: function(a, at)
     {
         at = at || 0;
-        var dv = new SpiceDataView(a);
+        var dv = new DataView(a);
         dv.setUint32(at, this.num_mon, true); at += 4;
         dv.setUint32(at, this.flags, true); at += 4;
         dv.setUint32(at, this.height, true); at += 4;
@@ -688,14 +687,14 @@ VDAgentFileXferStatusMessage.prototype =
     to_buffer: function(a, at)
     {
         at = at || 0;
-        var dv = new SpiceDataView(a);
+        var dv = new DataView(a);
         dv.setUint32(at, this.id, true); at += 4;
         dv.setUint32(at, this.result, true); at += 4;
     },
     from_buffer: function(a, at)
     {
         at = at || 0;
-        var dv = new SpiceDataView(a);
+        var dv = new DataView(a);
         this.id = dv.getUint32(at, true); at += 4;
         this.result = dv.getUint32(at, true); at += 4;
         return at;
@@ -717,7 +716,7 @@ VDAgentFileXferStartMessage.prototype =
     to_buffer: function(a, at)
     {
         at = at || 0;
-        var dv = new SpiceDataView(a);
+        var dv = new DataView(a);
         dv.setUint32(at, this.id, true); at += 4;
         for (var i = 0; i < this.string.length; i++, at++)
             dv.setUint8(at, this.string.charCodeAt(i));
@@ -740,9 +739,9 @@ VDAgentFileXferDataMessage.prototype =
     to_buffer: function(a, at)
     {
         at = at || 0;
-        var dv = new SpiceDataView(a);
+        var dv = new DataView(a);
         dv.setUint32(at, this.id, true); at += 4;
-        dv.setUint64(at, this.size, true); at += 8;
+        dv.setBigUint64(at, BigInt(this.size), true); at += 8;
         if (this.data && this.data.byteLength > 0)
         {
             var u8arr = new Uint8Array(this.data);
@@ -767,8 +766,8 @@ SpiceMsgNotify.prototype =
     {
         at = at || 0;
         var i;
-        var dv = new SpiceDataView(a);
-        this.time_stamp = dv.getUint64(at, true); at += 8;
+        var dv = new DataView(a);
+        this.time_stamp = dv.getBigUint64(at, true); at += 8;
         this.severity = dv.getUint32(at, true); at += 4;
         this.visibility = dv.getUint32(at, true); at += 4;
         this.what = dv.getUint32(at, true); at += 4;
@@ -795,9 +794,9 @@ SpiceMsgcDisplayInit.prototype =
     to_buffer: function(a, at)
     {
         at = at || 0;
-        var dv = new SpiceDataView(a);
+        var dv = new DataView(a);
         dv.setUint8(at, this.pixmap_cache_id, true); at++;
-        dv.setUint64(at, this.pixmap_cache_size, true); at += 8;
+        dv.setBigUint64(at, BigInt(this.pixmap_cache_size), true); at += 8;
         dv.setUint8(at, this.glz_dictionary_id, true); at++;
         dv.setUint32(at, this.glz_dictionary_window_size, true); at += 4;
     },
@@ -833,7 +832,7 @@ SpiceMsgDisplayDrawCopy.prototype =
     from_buffer: function(a, at)
     {
         at = at || 0;
-        var dv = new SpiceDataView(a);
+        var dv = new DataView(a);
         this.base = new SpiceMsgDisplayBase;
         at = this.base.from_dv(dv, at, a);
         this.data = new SpiceCopy;
@@ -851,7 +850,7 @@ SpiceMsgDisplayDrawFill.prototype =
     from_buffer: function(a, at)
     {
         at = at || 0;
-        var dv = new SpiceDataView(a);
+        var dv = new DataView(a);
         this.base = new SpiceMsgDisplayBase;
         at = this.base.from_dv(dv, at, a);
         this.data = new SpiceFill;
@@ -869,7 +868,7 @@ SpiceMsgDisplayCopyBits.prototype =
     from_buffer: function(a, at)
     {
         at = at || 0;
-        var dv = new SpiceDataView(a);
+        var dv = new DataView(a);
         this.base = new SpiceMsgDisplayBase;
         at = this.base.from_dv(dv, at, a);
         this.src_pos = new SpicePoint;
@@ -888,7 +887,7 @@ SpiceMsgSurfaceCreate.prototype =
     from_buffer: function(a, at)
     {
         at = at || 0;
-        var dv = new SpiceDataView(a);
+        var dv = new DataView(a);
         this.surface = new SpiceSurface;
         return this.surface.from_dv(dv, at, a);
     },
@@ -904,7 +903,7 @@ SpiceMsgSurfaceDestroy.prototype =
     from_buffer: function(a, at)
     {
         at = at || 0;
-        var dv = new SpiceDataView(a);
+        var dv = new DataView(a);
         this.surface_id = dv.getUint32(at, true); at += 4;
     },
 }
@@ -919,7 +918,7 @@ SpiceMsgInputsInit.prototype =
     from_buffer: function(a, at)
     {
         at = at || 0;
-        var dv = new SpiceDataView(a);
+        var dv = new DataView(a);
         this.keyboard_modifiers = dv.getUint16(at, true); at += 2;
         return at;
     },
@@ -935,7 +934,7 @@ SpiceMsgInputsKeyModifiers.prototype =
     from_buffer: function(a, at)
     {
         at = at || 0;
-        var dv = new SpiceDataView(a);
+        var dv = new DataView(a);
         this.keyboard_modifiers = dv.getUint16(at, true); at += 2;
         return at;
     },
@@ -951,7 +950,7 @@ SpiceMsgCursorInit.prototype =
     from_buffer: function(a, at, mb)
     {
         at = at || 0;
-        var dv = new SpiceDataView(a);
+        var dv = new DataView(a);
         this.position = new SpicePoint16;
         at = this.position.from_dv(dv, at, mb);
         this.trail_length = dv.getUint16(at, true); at += 2;
@@ -972,7 +971,7 @@ SpiceMsgPlaybackData.prototype =
     from_buffer: function(a, at, mb)
     {
         at = at || 0;
-        var dv = new SpiceDataView(a);
+        var dv = new DataView(a);
         this.time = dv.getUint32(at, true); at += 4;
         if (a.byteLength > at)
         {
@@ -993,7 +992,7 @@ SpiceMsgPlaybackMode.prototype =
     from_buffer: function(a, at, mb)
     {
         at = at || 0;
-        var dv = new SpiceDataView(a);
+        var dv = new DataView(a);
         this.time = dv.getUint32(at, true); at += 4;
         this.mode = dv.getUint16(at, true); at += 2;
         if (a.byteLength > at)
@@ -1015,7 +1014,7 @@ SpiceMsgPlaybackStart.prototype =
     from_buffer: function(a, at, mb)
     {
         at = at || 0;
-        var dv = new SpiceDataView(a);
+        var dv = new DataView(a);
         this.channels = dv.getUint32(at, true); at += 4;
         this.format = dv.getUint16(at, true); at += 2;
         this.frequency = dv.getUint32(at, true); at += 4;
@@ -1035,7 +1034,7 @@ SpiceMsgRecordStart.prototype =
     from_buffer: function(a, at, mb)
     {
         at = at || 0;
-        var dv = new SpiceDataView(a);
+        var dv = new DataView(a);
         this.channels = dv.getUint32(at, true); at += 4;
         this.format = dv.getUint16(at, true); at += 2;
         this.frequency = dv.getUint32(at, true); at += 4;
@@ -1054,7 +1053,7 @@ SpiceMsgcRecordMode.prototype =
     to_buffer: function(a, at)
     {
         at = at || 0;
-        var dv = new SpiceDataView(a);
+        var dv = new DataView(a);
         dv.setUint32(at, this.time, true); at += 4;
         /* audio_data_mode is an enum16 on the wire; the optional trailing
            codec data bytes are unused for both raw and opus. */
@@ -1077,7 +1076,7 @@ SpiceMsgcRecordStartMark.prototype =
     to_buffer: function(a, at)
     {
         at = at || 0;
-        var dv = new SpiceDataView(a);
+        var dv = new DataView(a);
         dv.setUint32(at, this.time, true); at += 4;
         return at;
     },
@@ -1098,7 +1097,7 @@ SpiceMsgcRecordData.prototype =
     to_buffer: function(a, at)
     {
         at = at || 0;
-        var dv = new SpiceDataView(a);
+        var dv = new DataView(a);
         dv.setUint32(at, this.time, true); at += 4;
         new Uint8Array(a).set(this.data, at);
         return at + this.data.byteLength;
@@ -1120,7 +1119,7 @@ SpiceMsgMainMultiMediaTime.prototype =
     from_buffer: function(a, at, mb)
     {
         at = at || 0;
-        var dv = new SpiceDataView(a);
+        var dv = new DataView(a);
         this.time = dv.getUint32(at, true); at += 4;
         return at;
     },
@@ -1136,7 +1135,7 @@ SpiceMsgCursorMove.prototype =
     from_buffer: function(a, at, mb)
     {
         at = at || 0;
-        var dv = new SpiceDataView(a);
+        var dv = new DataView(a);
         this.position = new SpicePoint16;
         return this.position.from_dv(dv, at, mb);
     },
@@ -1152,7 +1151,7 @@ SpiceMsgCursorSet.prototype =
     from_buffer: function(a, at, mb)
     {
         at = at || 0;
-        var dv = new SpiceDataView(a);
+        var dv = new DataView(a);
         this.position = new SpicePoint16;
         at = this.position.from_dv(dv, at, mb);
         this.visible = dv.getUint8(at, true); at ++;
@@ -1186,7 +1185,7 @@ SpiceMsgcMousePosition.prototype =
     to_buffer: function(a, at)
     {
         at = at || 0;
-        var dv = new SpiceDataView(a);
+        var dv = new DataView(a);
         dv.setUint32(at, this.x, true); at += 4;
         dv.setUint32(at, this.y, true); at += 4;
         dv.setUint16(at, this.buttons_state, true); at += 2;
@@ -1247,7 +1246,7 @@ SpiceMsgcMousePress.prototype =
     to_buffer: function(a, at)
     {
         at = at || 0;
-        var dv = new SpiceDataView(a);
+        var dv = new DataView(a);
         dv.setUint8(at, this.button, true); at ++;
         dv.setUint16(at, this.buttons_state, true); at += 2;
         return at;
@@ -1295,7 +1294,7 @@ SpiceMsgcKeyDown.prototype =
     to_buffer: function(a, at)
     {
         at = at || 0;
-        var dv = new SpiceDataView(a);
+        var dv = new DataView(a);
         dv.setUint32(at, this.code, true); at += 4;
         return at;
     },
@@ -1331,12 +1330,12 @@ SpiceMsgDisplayStreamCreate.prototype =
     from_buffer: function(a, at)
     {
         at = at || 0;
-        var dv = new SpiceDataView(a);
+        var dv = new DataView(a);
         this.surface_id = dv.getUint32(at, true); at += 4;
         this.id = dv.getUint32(at, true); at += 4;
         this.flags = dv.getUint8(at, true); at += 1;
         this.codec_type = dv.getUint8(at, true); at += 1;
-        this.stamp = dv.getUint64(at, true); at += 8;
+        this.stamp = dv.getBigUint64(at, true); at += 8;
         this.stream_width = dv.getUint32(at, true); at += 4;
         this.stream_height = dv.getUint32(at, true); at += 4;
         this.src_width = dv.getUint32(at, true); at += 4;
@@ -1373,11 +1372,11 @@ SpiceMsgDisplayStreamData.prototype =
     from_buffer: function(a, at)
     {
         at = at || 0;
-        var dv = new SpiceDataView(a);
+        var dv = new DataView(a);
         this.base = new SpiceStreamDataHeader;
         at = this.base.from_dv(dv, at, a);
         this.data_size = dv.getUint32(at, true); at += 4;
-        this.data = dv.u8.subarray(at, at + this.data_size);
+        this.data = new Uint8Array(a, at, this.data_size);
     },
 }
 
@@ -1391,7 +1390,7 @@ SpiceMsgDisplayStreamDataSized.prototype =
     from_buffer: function(a, at)
     {
         at = at || 0;
-        var dv = new SpiceDataView(a);
+        var dv = new DataView(a);
         this.base = new SpiceStreamDataHeader;
         at = this.base.from_dv(dv, at, a);
         this.width = dv.getUint32(at, true); at += 4;
@@ -1399,7 +1398,7 @@ SpiceMsgDisplayStreamDataSized.prototype =
         this.dest = new SpiceRect;
         at = this.dest.from_dv(dv, at, a);
         this.data_size = dv.getUint32(at, true); at += 4;
-        this.data = dv.u8.subarray(at, at + this.data_size);
+        this.data = new Uint8Array(a, at, this.data_size);
     },
 }
 
@@ -1414,7 +1413,7 @@ SpiceMsgDisplayStreamClip.prototype =
     from_buffer: function(a, at)
     {
         at = at || 0;
-        var dv = new SpiceDataView(a);
+        var dv = new DataView(a);
         this.id = dv.getUint32(at, true); at += 4;
         this.clip = new SpiceClip;
         this.clip.from_dv(dv, at, a);
@@ -1431,7 +1430,7 @@ SpiceMsgDisplayStreamDestroy.prototype =
     from_buffer: function(a, at)
     {
         at = at || 0;
-        var dv = new SpiceDataView(a);
+        var dv = new DataView(a);
         this.id = dv.getUint32(at, true); at += 4;
     },
 }
@@ -1446,7 +1445,7 @@ SpiceMsgDisplayStreamActivateReport.prototype =
     from_buffer: function(a, at)
     {
         at = at || 0;
-        var dv = new SpiceDataView(a);
+        var dv = new DataView(a);
         this.stream_id = dv.getUint32(at, true); at += 4;
         this.unique_id = dv.getUint32(at, true); at += 4;
         this.max_window_size = dv.getUint32(at, true); at += 4;
@@ -1473,7 +1472,7 @@ SpiceMsgcDisplayStreamReport.prototype =
     to_buffer: function(a, at)
     {
         at = at || 0;
-        var dv = new SpiceDataView(a);
+        var dv = new DataView(a);
         dv.setUint32(at, this.stream_id, true); at += 4;
         dv.setUint32(at, this.unique_id, true); at += 4;
         dv.setUint32(at, this.start_frame_mm_time, true); at += 4;
@@ -1503,13 +1502,13 @@ SpiceMsgDisplayInvalList.prototype =
     {
         var i;
         at = at || 0;
-        var dv = new SpiceDataView(a);
+        var dv = new DataView(a);
         this.count = dv.getUint16(at, true); at += 2;
         for (i = 0; i < this.count; i++)
         {
             this.resources[i] = {};
             this.resources[i].type = dv.getUint8(at, true); at++;
-            this.resources[i].id = dv.getUint64(at, true); at += 8;
+            this.resources[i].id = dv.getBigUint64(at, true); at += 8;
         }
     },
 }
@@ -1524,7 +1523,7 @@ SpiceMsgPortInit.prototype =
     from_buffer: function (a, at)
     {
         at = at || 0;
-        var dv = new SpiceDataView(a);
+        var dv = new DataView(a);
         var namesize = dv.getUint32(at, true); at += 4;
         var offset = dv.getUint32(at, true); at += 4;
         this.opened = dv.getUint8(at, true); at += 1;
