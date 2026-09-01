@@ -1260,7 +1260,7 @@ SpiceMsgDisplayStreamData.prototype =
         this.base = new SpiceStreamDataHeader;
         at = this.base.from_dv(dv, at, a);
         this.data_size = dv.getUint32(at, true); at += 4;
-        this.data = dv.u8.subarray(at, at + this.data_size);
+        this.data = new Uint8Array(a, at, this.data_size);
     },
 }
 
@@ -1282,7 +1282,7 @@ SpiceMsgDisplayStreamDataSized.prototype =
         this.dest = new SpiceRect;
         at = this.dest.from_dv(dv, at, a);
         this.data_size = dv.getUint32(at, true); at += 4;
-        this.data = dv.u8.subarray(at, at + this.data_size);
+        this.data = new Uint8Array(a, at, this.data_size);
     },
 }
 
