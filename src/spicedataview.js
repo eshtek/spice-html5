@@ -53,17 +53,8 @@ SpiceDataView.prototype = {
     },
     getUint64: function (byteOffset, littleEndian)
     {
-        var low = 4, high = 0;
-        if (littleEndian)
-        {
-            low = 0;
-            high = 4;
-        }
-
-        /* JS shift counts are taken mod 32, so << 32 is a no-op.
-           Currently values above 2^53 still lose precision in a Number. */
-        return (this.dv.getUint32(byteOffset + high, littleEndian) * 0x100000000) +
-                this.dv.getUint32(byteOffset + low, littleEndian);
+        /* Values above 2^53 still lose precision in a Number. */
+        return Number(this.dv.getBigUint64(byteOffset, littleEndian));
     },
     setUint8:  function(byteOffset, b)
     {
@@ -79,16 +70,7 @@ SpiceDataView.prototype = {
     },
     setUint64:  function(byteOffset, w, littleEndian)
     {
-        var low = 4, high = 0;
-        if (littleEndian)
-        {
-            low = 0;
-            high = 4;
-        }
-
-        /* Split with arithmetic: a 64-bit value does not fit a shift. */
-        this.dv.setUint32(byteOffset + high, (w / 0x100000000) >>> 0, littleEndian);
-        this.dv.setUint32(byteOffset + low,  w >>> 0, littleEndian);
+        this.dv.setBigUint64(byteOffset, BigInt(w), littleEndian);
     },
 }
 
