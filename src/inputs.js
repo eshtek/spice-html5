@@ -384,13 +384,22 @@ function send_scancode(sc, scancode, down)
     sc.inputs.send_msg(msg);
 }
 
+/* A keystroke is a press and a release separated by time.  Sending both in
+   the same tick, as this once did, makes a guest drop characters: Windows in
+   particular discards a key whose break code arrives in the same instant as
+   its make code, and the loss is silent and intermittent — a pasted URL or
+   password arrives subtly wrong.  So hold each key down, and give Shift its
+   own settle time either side, before moving on. */
+var KEY_HOLD_MS = 12;
+var SHIFT_SETTLE_MS = 12;
+
 /* Resolves to { typed, skipped, aborted }: how many characters went out,
    which distinct characters had no US-layout key, and whether the inputs
-   channel died mid-string. delay_ms paces characters so a guest's keyboard
-   buffer is not flooded by a large paste. */
+   channel died mid-string. delay_ms is the gap between characters, which
+   paces a large paste so a guest's keyboard buffer is not flooded. */
 function typeText(sc, text, delay_ms)
 {
-    var delay = typeof delay_ms === 'number' ? delay_ms : 15;
+    var delay = typeof delay_ms === 'number' ? delay_ms : 25;
     /* A CRLF must land as a single Enter, not Enter twice. */
     var chars = text.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
     var skipped = [];
@@ -423,15 +432,37 @@ function typeText(sc, text, delay_ms)
                 return;
             }
 
-            if (entry[1])
-                send_scancode(sc, KeyNames.KEY_ShiftL, true);
-            send_scancode(sc, scancode, true);
-            send_scancode(sc, scancode, false);
-            if (entry[1])
-                send_scancode(sc, KeyNames.KEY_ShiftL, false);
+            /* Each phase is [what to send, how long to wait after it], run in
+               order; the guest sees a press, a hold, and a release. */
+            var shifted = entry[1];
+            var phases = [];
+            if (shifted)
+                phases.push([function () { send_scancode(sc, KeyNames.KEY_ShiftL, true); }, SHIFT_SETTLE_MS]);
+            phases.push([function () { send_scancode(sc, scancode, true); }, KEY_HOLD_MS]);
+            phases.push([function () { send_scancode(sc, scancode, false); }, shifted ? SHIFT_SETTLE_MS : delay]);
+            if (shifted)
+                phases.push([function () { send_scancode(sc, KeyNames.KEY_ShiftL, false); }, delay]);
             typed++;
 
-            window.setTimeout(step, delay);
+            var phase = 0;
+            (function run()
+            {
+                if (phase >= phases.length)
+                {
+                    step();
+                    return;
+                }
+                /* The channel can die mid-character; stop rather than send a
+                   press whose release will never follow. */
+                if (!(sc && sc.inputs && sc.inputs.state === "ready"))
+                {
+                    resolve({ typed: typed - 1, skipped: skipped, aborted: true });
+                    return;
+                }
+                var current = phases[phase++];
+                current[0]();
+                window.setTimeout(run, current[1]);
+            })();
         }
         step();
     });
