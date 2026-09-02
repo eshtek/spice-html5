@@ -43,6 +43,7 @@ import {
 } from './spicemsg.js';
 import { DEBUG, hexdump_buffer } from './utils.js';
 import * as Webm from './webm.js';
+import { video_decoder_codec } from './videocodecs.js';
 import { rsa_encrypt } from './ticket.js';
 
 function SpiceConn(o)
@@ -170,8 +171,15 @@ SpiceConn.prototype =
                         (1 << Constants.SPICE_DISPLAY_CAP_STREAM_REPORT) |
                         (1 << Constants.SPICE_DISPLAY_CAP_MULTI_CODEC) |
                         (1 << Constants.SPICE_DISPLAY_CAP_CODEC_MJPEG);
-            if ('MediaSource' in window && MediaSource.isTypeSupported(Webm.Constants.SPICE_VP8_CODEC))
+            /* VP8 plays through a VideoDecoder when the browser has one,
+               else through MediaSource; H.264 and VP9 need the decoder. */
+            if (video_decoder_codec(Constants.SPICE_VIDEO_CODEC_TYPE_VP8) ||
+                ('MediaSource' in window && MediaSource.isTypeSupported(Webm.Constants.SPICE_VP8_CODEC)))
                 caps |= (1 << Constants.SPICE_DISPLAY_CAP_CODEC_VP8);
+            if (video_decoder_codec(Constants.SPICE_VIDEO_CODEC_TYPE_H264))
+                caps |= (1 << Constants.SPICE_DISPLAY_CAP_CODEC_H264);
+            if (video_decoder_codec(Constants.SPICE_VIDEO_CODEC_TYPE_VP9))
+                caps |= (1 << Constants.SPICE_DISPLAY_CAP_CODEC_VP9);
             msg.channel_caps.push(caps);
         }
 
