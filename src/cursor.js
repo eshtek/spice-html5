@@ -63,14 +63,14 @@ SpiceCursorConn.prototype.process_channel_message = function(msg)
     {
         var cursor_set = new SpiceMsgCursorSet(msg.data);
         DEBUG > 1 && console.log("SpiceMsgCursorSet");
-        if (cursor_set.flags & Constants.SPICE_CURSOR_FLAGS_NONE)
+        if (cursor_set.cursor.flags & Constants.SPICE_CURSOR_FLAGS_NONE)
         {
             document.getElementById(this.parent.screen_id).style.cursor = "none";
             return true;
         }
 
-        if (cursor_set.flags > 0)
-            this.log_warn("FIXME: No support for cursor flags " + cursor_set.flags);
+        if (cursor_set.cursor.flags > 0)
+            this.log_warn("FIXME: No support for cursor flags " + cursor_set.cursor.flags);
 
         /* An unconvertible shape is not an unhandled message: returning
            false here made the base class log a second, misleading
