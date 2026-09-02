@@ -77,7 +77,9 @@ function image_to_image_data(img, width, height)
 
 /* A VP8 stream paints into a video element over the canvas, out of reach
    of the canvas clip; CSS clip-path carries the same rectangles, relative
-   to the element's own origin. */
+   to the element's own origin. A bottom-up stream is shown through a
+   scaleY(-1) transform, which flips the clip-path along with the pixels,
+   so its rectangles are mirrored here to land where the server put them. */
 function apply_video_clip(stream)
 {
     if (! stream.video)
@@ -93,13 +95,17 @@ function apply_video_clip(stream)
         stream.video.style.clipPath = "inset(100%)";
         return;
     }
+    var flipped = ! (stream.flags & Constants.SPICE_STREAM_FLAGS_TOP_DOWN);
     var path = "";
     for (var i = 0; i < rects.length; i++)
     {
         var w = rects[i].right - rects[i].left;
         var h = rects[i].bottom - rects[i].top;
-        path += "M" + (rects[i].left - stream.dest.left) + " " + (rects[i].top - stream.dest.top) +
-                "h" + w + "v" + h + "h" + (-w) + "z";
+        var x = rects[i].left - stream.dest.left;
+        var y = rects[i].top - stream.dest.top;
+        if (flipped)
+            y = stream.stream_height - y - h;
+        path += "M" + x + " " + y + "h" + w + "v" + h + "h" + (-w) + "z";
     }
     stream.video.style.clipPath = 'path("' + path + '")';
 }
