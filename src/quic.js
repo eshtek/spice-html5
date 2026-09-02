@@ -1293,22 +1293,30 @@ SpiceQuic.prototype =
     },
 }
 
+/* Each decoded pixel is one B,G,R,A word; swap to R,G,B,A in one load and
+   store. QUIC carries its alpha inverted. */
 function convert_spice_quic_to_web(context, spice_quic)
 {
     var ret = context.createImageData(spice_quic.width, spice_quic.height);
     var i;
-    var dest = ret.data;
     var src = spice_quic.outptr;
-    var n = ret.width * ret.height * 4;
+    var n = ret.width * ret.height;
     var rgba = spice_quic.type === Constants.QUIC_IMAGE_TYPE_RGBA;
-    for (i = 0; i < n; i+=4)
-    {
-        dest[i + 0] = src[i + 2];
-        dest[i + 1] = src[i + 1];
-        dest[i + 2] = src[i + 0];
-        dest[i + 3] = rgba ? 255 - src[i + 3] : 255;
-    }
-   return ret;
+    var dest = new Uint32Array(ret.data.buffer);
+    var words = new Uint32Array(src.buffer, src.byteOffset, n);
+    if (rgba)
+        for (i = 0; i < n; i++)
+        {
+            var v = words[i];
+            dest[i] = ((v >>> 16) & 0xff) | (v & 0xff00) | ((v & 0xff) << 16) | (~v & 0xff000000);
+        }
+    else
+        for (i = 0; i < n; i++)
+        {
+            var v = words[i];
+            dest[i] = ((v >>> 16) & 0xff) | (v & 0xff00) | ((v & 0xff) << 16) | 0xff000000;
+        }
+    return ret;
 }
 
 /* Module initialization */
