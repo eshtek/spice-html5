@@ -28,6 +28,7 @@ import { SpiceConn } from './spiceconn.js';
 import { SpiceRect } from './spicetype.js';
 import { convert_spice_lz_to_web } from './lz.js';
 import { convert_spice_bitmap_to_web } from './bitmap.js';
+import { VideoCodecs, video_decoder_codec, video_keyframe } from './videocodecs.js';
 
 /*----------------------------------------------------------------------------
 **  FIXME: putImageData  does not support Alpha blending
@@ -235,11 +236,17 @@ SpiceDisplayConn.prototype.enqueue = function(draw)
     return op;
 }
 
-/* An op whose draw is not known yet; mark_ready() supplies it. */
+/* An op whose draw is not known yet; mark_ready() supplies it. One that
+   is still not ready after STALE_OP_MS is skipped by the drain, so a
+   decoder that swallows a frame cannot hold the queue for good. */
+var STALE_OP_MS = 2000;
+
 SpiceDisplayConn.prototype.enqueue_pending = function()
 {
-    var op = { ready: false, draw: null };
+    var op = { ready: false, draw: null, since: performance.now() };
     this.ops.push(op);
+    /* The drain stops at this op and arms the stale check for it. */
+    this.schedule_flush();
     return op;
 }
 
@@ -284,9 +291,17 @@ SpiceDisplayConn.prototype.flush = function(budget_ms)
 {
     this.cancel_flush();
     var deadline = performance.now() + budget_ms;
-    while (this.ops.length > 0 && this.ops[0].ready)
+    while (this.ops.length > 0 &&
+           (this.ops[0].ready || performance.now() - this.ops[0].since > STALE_OP_MS))
     {
         var op = this.ops.shift();
+        if (! op.ready)
+        {
+            this.log_warn("Skipping a draw that never became ready");
+            if (op.on_stale)
+                op.on_stale();
+            continue;
+        }
         if (op.draw)
             op.draw.call(this);
         if (performance.now() > deadline && this.ops.length > 0 && this.ops[0].ready)
@@ -294,6 +309,18 @@ SpiceDisplayConn.prototype.flush = function(budget_ms)
             this.schedule_frame();
             return;
         }
+    }
+    /* Nothing else will drain the queue while its head is not ready, so
+       come back when that op would be stale. */
+    if (this.ops.length > 0 && this.stale_timer === undefined)
+    {
+        var sc = this;
+        var wait = Math.max(0, this.ops[0].since + STALE_OP_MS - performance.now()) + 1;
+        this.stale_timer = window.setTimeout(function()
+        {
+            sc.stale_timer = undefined;
+            sc.flush(FLUSH_BUDGET_MS);
+        }, wait);
     }
 }
 
@@ -306,6 +333,14 @@ SpiceDisplayConn.prototype.flush_all = function()
 SpiceDisplayConn.prototype.drop_queue = function()
 {
     this.cancel_flush();
+    if (this.stale_timer !== undefined)
+    {
+        window.clearTimeout(this.stale_timer);
+        this.stale_timer = undefined;
+    }
+    for (var i = 0; i < this.ops.length; i++)
+        if (this.ops[i].release)
+            this.ops[i].release();
     this.ops = [];
 }
 
@@ -837,7 +872,12 @@ SpiceDisplayConn.prototype.process_channel_message = function(msg)
         else
             this.streams[m.id] = m;
 
-        if (m.codec_type == Constants.SPICE_VIDEO_CODEC_TYPE_VP8)
+        var decoder_codec = video_decoder_codec(m.codec_type);
+        if (decoder_codec !== undefined && typeof VideoDecoder !== "undefined")
+        {
+            create_stream_decoder(this, this.streams[m.id], decoder_codec);
+        }
+        else if (m.codec_type == Constants.SPICE_VIDEO_CODEC_TYPE_VP8)
         {
             var media = new MediaSource();
             var v = document.createElement("video");
@@ -901,10 +941,11 @@ SpiceDisplayConn.prototype.process_channel_message = function(msg)
 
         var time_until_due = m.base.multi_media_time - this.parent.relative_now();
 
-        if (this.streams[m.base.id].codec_type === Constants.SPICE_VIDEO_CODEC_TYPE_MJPEG)
+        if (this.streams[m.base.id].decoder)
+            process_decoder_stream_data(this, this.streams[m.base.id], m, time_until_due);
+        else if (this.streams[m.base.id].codec_type === Constants.SPICE_VIDEO_CODEC_TYPE_MJPEG)
             process_mjpeg_stream_data(this, m, time_until_due);
-
-        if (this.streams[m.base.id].codec_type === Constants.SPICE_VIDEO_CODEC_TYPE_VP8)
+        else if (this.streams[m.base.id].codec_type === Constants.SPICE_VIDEO_CODEC_TYPE_VP8)
             process_video_stream_data(this.streams[m.base.id], m);
 
         return true;
@@ -1196,10 +1237,32 @@ SpiceDisplayConn.prototype.unhook_events = function()
 }
 
 
+/* MJPEG first, then whatever the decoder probe still says yes to, in the
+   order a server would otherwise pick them. Only sent to a server that
+   advertised taking the message. */
+SpiceDisplayConn.prototype.send_preferred_video_codecs = function()
+{
+    if (! this.reply_link ||
+        ! (this.reply_link.channel_caps[0] & (1 << Constants.SPICE_DISPLAY_CAP_PREF_VIDEO_CODEC_TYPE)))
+        return;
+    var codecs = [Constants.SPICE_VIDEO_CODEC_TYPE_MJPEG];
+    [Constants.SPICE_VIDEO_CODEC_TYPE_H264, Constants.SPICE_VIDEO_CODEC_TYPE_VP9, Constants.SPICE_VIDEO_CODEC_TYPE_VP8].forEach(function(type)
+    {
+        if (VideoCodecs.supported[type])
+            codecs.push(type);
+    });
+    var msg = new Messages.SpiceMiniData();
+    msg.build_msg(Constants.SPICE_MSGC_DISPLAY_PREFERRED_VIDEO_CODEC_TYPE,
+                  new Messages.SpiceMsgcDisplayPreferredVideoCodecType(codecs));
+    this.send_msg(msg);
+}
+
 SpiceDisplayConn.prototype.destroy_stream = function(id)
 {
     var stream = this.streams[id];
-    if (stream.codec_type == Constants.SPICE_VIDEO_CODEC_TYPE_VP8)
+    if (stream.decoder)
+        close_stream_decoder(this, stream);
+    else if (stream.codec_type == Constants.SPICE_VIDEO_CODEC_TYPE_VP8)
     {
         if (stream.video)
         {
@@ -1368,6 +1431,195 @@ function draw_jpeg_now(img)
 
     if (sc.streams && sc.streams[o.id] && "report" in sc.streams[o.id])
         process_stream_data_report(sc, o.id, o.msg_mmtime, o.msg_mmtime - sc.parent.relative_now());
+}
+
+/*----------------------------------------------------------------------------
+**  Streams through a WebCodecs VideoDecoder
+**      Each STREAM_DATA is one EncodedVideoChunk; the decoded frame is
+**      drawn into the surface through the draw queue, in order with
+**      everything else, under the stream's clip, so a decoded stream
+**      composes like any other draw and needs no element floated over
+**      the canvas. SPICE does not flag key frames, so the bitstream is
+**      read for one: nothing is decoded before the first, and a backlog
+**      is cleared by dropping until the next, since an inter frame
+**      cannot be dropped on its own.
+**--------------------------------------------------------------------------*/
+var DECODER_BACKLOG_LIMIT = 8;
+
+function create_stream_decoder(sc, stream, codec)
+{
+    stream.pending_frames = [];
+    stream.awaiting_key = true;
+    stream.decoder_failed = false;
+    stream.decoder = new VideoDecoder(
+    {
+        output: function(frame) { handle_decoded_frame(sc, stream, frame); },
+        error: function(e)
+        {
+            sc.log_err("Video decoder for stream " + stream.id + " failed: " + e.message);
+            abandon_stream_codec(sc, stream);
+        },
+    });
+    try
+    {
+        stream.decoder.configure(
+        {
+            codec: codec,
+            codedWidth: stream.stream_width,
+            codedHeight: stream.stream_height,
+            optimizeForLatency: true,
+        });
+    }
+    catch (e)
+    {
+        sc.log_err("Video decoder for stream " + stream.id + " refused " + codec + ": " + e.message);
+        abandon_stream_codec(sc, stream);
+    }
+}
+
+/* Frames still waiting on the decoder are released so the draw queue can
+   move on; the stream stays registered, and drops its data, until the
+   server destroys it. */
+function fail_stream_decoder(sc, stream)
+{
+    stream.decoder_failed = true;
+    var pending = stream.pending_frames;
+    stream.pending_frames = [];
+    for (var i = 0; i < pending.length; i++)
+    {
+        pending[i].op.on_stale = undefined;
+        sc.mark_ready(pending[i].op, null);
+    }
+}
+
+/* A codec the decoder could not take is struck off for this session and
+   the server is asked to prefer MJPEG over it; a server that honours the
+   request tears the stream down and recreates it with the new codec, so
+   the stream recovers instead of staying dark. */
+function abandon_stream_codec(sc, stream)
+{
+    fail_stream_decoder(sc, stream);
+    if (! VideoCodecs.supported[stream.codec_type])
+        return;
+    VideoCodecs.supported[stream.codec_type] = false;
+    sc.send_preferred_video_codecs();
+}
+
+function close_stream_decoder(sc, stream)
+{
+    fail_stream_decoder(sc, stream);
+    try
+    {
+        if (stream.decoder.state != "closed")
+            stream.decoder.close();
+    }
+    catch (e)
+    {
+    }
+    stream.decoder = null;
+}
+
+function process_decoder_stream_data(sc, stream, m, time_until_due)
+{
+    if (stream.decoder_failed)
+        return;
+    var data = m.data instanceof Uint8Array ? m.data : new Uint8Array(m.data);
+    var key = video_keyframe(stream.codec_type, data);
+
+    if (stream.awaiting_key)
+    {
+        if (! key)
+        {
+            if ("report" in stream)
+                stream.report.num_drops++;
+            return;
+        }
+        stream.awaiting_key = false;
+    }
+    else if (! key && time_until_due < 0 && stream.decoder.decodeQueueSize > DECODER_BACKLOG_LIMIT)
+    {
+        /* Late and backed up: drop this frame and every one until the
+           next key frame, the only place the stream can resume. */
+        stream.awaiting_key = true;
+        if ("report" in stream)
+            stream.report.num_drops++;
+        return;
+    }
+
+    var op = sc.enqueue_pending();
+    /* A decoder that takes a frame and never outputs one, rather than
+       erroring, is found out by the draw queue's stale check. */
+    op.on_stale = function() { abandon_stream_codec(sc, stream); };
+    stream.pending_frames.push(
+    {
+        op: op,
+        msg_mmtime: m.base.multi_media_time,
+        dest: m.dest || stream.dest,
+        clip: stream.clip,
+    });
+    try
+    {
+        stream.decoder.decode(new EncodedVideoChunk(
+        {
+            type: key ? "key" : "delta",
+            timestamp: m.base.multi_media_time * 1000,
+            data: data,
+        }));
+    }
+    catch (e)
+    {
+        sc.log_err("Video decoder for stream " + stream.id + " rejected a frame: " + e.message);
+        abandon_stream_codec(sc, stream);
+    }
+}
+
+function handle_decoded_frame(sc, stream, frame)
+{
+    var item = stream.pending_frames.shift();
+    if (! item)
+    {
+        frame.close();
+        return;
+    }
+    item.op.release = function() { frame.close(); };
+    sc.mark_ready(item.op, function()
+    {
+        item.op.release = undefined;
+        draw_decoded_frame(this, stream, frame, item);
+    });
+}
+
+function draw_decoded_frame(sc, stream, frame, item)
+{
+    var surface = sc.surfaces ? sc.surfaces[stream.surface_id] : undefined;
+    if (surface === undefined || ! sc.streams || sc.streams[stream.id] !== stream)
+    {
+        frame.close();
+        return;
+    }
+    var context = surface.canvas.context;
+    var dest = item.dest;
+    var width = dest.right - dest.left;
+    var height = dest.bottom - dest.top;
+    with_clip(context, item.clip, function()
+    {
+        if (! (stream.flags & Constants.SPICE_STREAM_FLAGS_TOP_DOWN))
+        {
+            /* Bottom-up frames arrive last row first; flip while blitting. */
+            context.save();
+            context.translate(dest.left, dest.top + height);
+            context.scale(1, -1);
+            context.drawImage(frame, 0, 0, width, height);
+            context.restore();
+        }
+        else
+            context.drawImage(frame, dest.left, dest.top, width, height);
+    });
+    frame.close();
+    surface.draw_count++;
+
+    if ("report" in stream)
+        process_stream_data_report(sc, stream.id, item.msg_mmtime, item.msg_mmtime - sc.parent.relative_now());
 }
 
 function process_mjpeg_stream_data(sc, m, time_until_due)

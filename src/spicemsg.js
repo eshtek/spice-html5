@@ -1389,6 +1389,31 @@ SpiceMsgcDisplayStreamReport.prototype =
     }
 }
 
+/* The client's video codec preference, most preferred first; the server
+   stops its streams and recreates them with the first codec both sides
+   support. */
+function SpiceMsgcDisplayPreferredVideoCodecType(codecs)
+{
+    this.codecs = codecs;
+}
+
+SpiceMsgcDisplayPreferredVideoCodecType.prototype =
+{
+    to_buffer: function(a, at)
+    {
+        at = at || 0;
+        var dv = new DataView(a);
+        dv.setUint8(at, this.codecs.length); at++;
+        for (var i = 0; i < this.codecs.length; i++, at++)
+            dv.setUint8(at, this.codecs[i]);
+        return at;
+    },
+    buffer_size: function()
+    {
+        return 1 + this.codecs.length;
+    }
+}
+
 function SpiceMsgDisplayInvalList(a, at)
 {
     this.count = 0;
@@ -1487,6 +1512,7 @@ export {
   SpiceMsgDisplayStreamDestroy,
   SpiceMsgDisplayStreamActivateReport,
   SpiceMsgcDisplayStreamReport,
+  SpiceMsgcDisplayPreferredVideoCodecType,
   SpiceMsgDisplayInvalList,
   SpiceMsgPortInit,
 };
