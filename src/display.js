@@ -56,6 +56,85 @@ function putImageDataWithAlpha(context, d, x, y)
     context.drawImage(scratch_canvas, 0, 0, d.width, d.height, x, y, d.width, d.height);
 }
 
+/* The decoded pixels of an image element, read back through the scratch
+   canvas rather than the surface, so a clipped draw can still cache the
+   whole image. */
+function image_to_image_data(img, width, height)
+{
+    if (scratch_canvas === null)
+    {
+        scratch_canvas = document.createElement("canvas");
+        scratch_context = scratch_canvas.getContext("2d");
+    }
+    if (scratch_canvas.width < width)
+        scratch_canvas.width = width;
+    if (scratch_canvas.height < height)
+        scratch_canvas.height = height;
+    scratch_context.clearRect(0, 0, width, height);
+    scratch_context.drawImage(img, 0, 0);
+    return scratch_context.getImageData(0, 0, width, height);
+}
+
+/* A VP8 stream paints into a video element over the canvas, out of reach
+   of the canvas clip; CSS clip-path carries the same rectangles, relative
+   to the element's own origin. */
+function apply_video_clip(stream)
+{
+    if (! stream.video)
+        return;
+    if (! is_clipped(stream.clip))
+    {
+        stream.video.style.clipPath = "";
+        return;
+    }
+    var rects = stream.clip.rects.rects || [];
+    if (rects.length == 0)
+    {
+        stream.video.style.clipPath = "inset(100%)";
+        return;
+    }
+    var path = "";
+    for (var i = 0; i < rects.length; i++)
+    {
+        var w = rects[i].right - rects[i].left;
+        var h = rects[i].bottom - rects[i].top;
+        path += "M" + (rects[i].left - stream.dest.left) + " " + (rects[i].top - stream.dest.top) +
+                "h" + w + "v" + h + "h" + (-w) + "z";
+    }
+    stream.video.style.clipPath = 'path("' + path + '")';
+}
+
+function is_clipped(clip)
+{
+    return clip !== undefined && clip.type == Constants.SPICE_CLIP_TYPE_RECTS;
+}
+
+/* Runs draw with the context clipped to the rectangles of a
+   SPICE_CLIP_TYPE_RECTS clip, the way spice-gtk clips every operation. A
+   clip with no rectangles paints nothing. Only path-based drawing honours
+   the clip region: putImageData does not, so clipped bitmap draws must go
+   through drawImage. */
+function with_clip(context, clip, draw)
+{
+    if (! is_clipped(clip))
+    {
+        draw();
+        return;
+    }
+    var rects = clip.rects.rects || [];
+    if (rects.length == 0)
+        return;
+    context.save();
+    context.beginPath();
+    for (var i = 0; i < rects.length; i++)
+        context.rect(rects[i].left, rects[i].top,
+                     rects[i].right - rects[i].left,
+                     rects[i].bottom - rects[i].top);
+    context.clip();
+    draw();
+    context.restore();
+}
+
 /*----------------------------------------------------------------------------
 **  FIXME: Spice will send an image with '0' alpha when it is intended to
 **           go on a surface w/no alpha.  So in that case, we have to strip
@@ -134,8 +213,6 @@ SpiceDisplayConn.prototype.process_channel_message = function(msg)
 
         if (! draw_copy.base.box.is_same_size(draw_copy.data.src_area))
             this.log_warn("FIXME: DrawCopy src_area is a different size than base.box; we do not handle that yet.");
-        if (draw_copy.base.clip.type != Constants.SPICE_CLIP_TYPE_NONE)
-            this.log_warn("FIXME: DrawCopy we don't handle clipping yet");
         if (draw_copy.data.rop_descriptor != Constants.SPICE_ROPD_OP_PUT)
             this.log_warn("FIXME: DrawCopy we don't handle ropd type: " + draw_copy.data.rop_descriptor);
         if (draw_copy.data.mask.flags)
@@ -356,12 +433,16 @@ SpiceDisplayConn.prototype.process_channel_message = function(msg)
             // FIXME - do brushes ever have alpha?
             var color = draw_fill.data.brush.color & 0xffffff;
             var color_str = "rgb(" + (color >> 16) + ", " + ((color >> 8) & 0xff) + ", " + (color & 0xff) + ")";
-            this.surfaces[draw_fill.base.surface_id].canvas.context.fillStyle = color_str;
+            var fill_context = this.surfaces[draw_fill.base.surface_id].canvas.context;
+            fill_context.fillStyle = color_str;
 
-            this.surfaces[draw_fill.base.surface_id].canvas.context.fillRect(
-                draw_fill.base.box.left, draw_fill.base.box.top,
-                draw_fill.base.box.right - draw_fill.base.box.left,
-                draw_fill.base.box.bottom - draw_fill.base.box.top);
+            with_clip(fill_context, draw_fill.base.clip, function()
+            {
+                fill_context.fillRect(
+                    draw_fill.base.box.left, draw_fill.base.box.top,
+                    draw_fill.base.box.right - draw_fill.base.box.left,
+                    draw_fill.base.box.bottom - draw_fill.base.box.top);
+            });
 
             if (Utils.DUMP_DRAWS && this.parent.dump_id)
             {
@@ -461,9 +542,12 @@ SpiceDisplayConn.prototype.process_channel_message = function(msg)
            first (per the 2D canvas spec), so this replaces a getImageData
            round-trip — a full GPU->CPU sync readback per scroll — with a
            blit that stays on the GPU. */
-        source_context.drawImage(source_canvas,
-                copy_bits.src_pos.x, copy_bits.src_pos.y, width, height,
-                copy_bits.base.box.left, copy_bits.base.box.top, width, height);
+        with_clip(source_context, copy_bits.base.clip, function()
+        {
+            source_context.drawImage(source_canvas,
+                    copy_bits.src_pos.x, copy_bits.src_pos.y, width, height,
+                    copy_bits.base.box.left, copy_bits.base.box.top, width, height);
+        });
 
         if (Utils.DUMP_DRAWS && this.parent.dump_id)
         {
@@ -610,6 +694,7 @@ SpiceDisplayConn.prototype.process_channel_message = function(msg)
             media.stream = s;
             media.spiceconn = this;
             v.spice_stream = s;
+            apply_video_clip(s);
         }
         else if (m.codec_type == Constants.SPICE_VIDEO_CODEC_TYPE_MJPEG)
             this.streams[m.id].frames_loading = 0;
@@ -666,7 +751,10 @@ SpiceDisplayConn.prototype.process_channel_message = function(msg)
         /* A clip for a stream that was already destroyed must not throw:
            an exception in a handler desyncs the channel framing. */
         if (this.streams && this.streams[m.id])
+        {
             this.streams[m.id].clip = m.clip;
+            apply_video_clip(this.streams[m.id]);
+        }
         return true;
     }
 
@@ -735,21 +823,31 @@ SpiceDisplayConn.prototype.draw_copy_helper = function(o)
 {
 
     var canvas = this.surfaces[o.base.surface_id].canvas;
-    if (o.has_alpha)
+    var left = o.base.box.left;
+    var top = o.base.box.top;
+    /* FIXME - This is based on trial + error, not a serious thoughtful
+               analysis of what Spice requires.  See display.js for more. */
+    var opaque = ! o.has_alpha ||
+        this.surfaces[o.base.surface_id].format == Constants.SPICE_SURFACE_FMT_32_xRGB;
+    if (opaque && o.has_alpha)
+        stripAlpha(o.image_data);
+
+    if (is_clipped(o.base.clip))
     {
-        /* FIXME - This is based on trial + error, not a serious thoughtful
-                   analysis of what Spice requires.  See display.js for more. */
-        if (this.surfaces[o.base.surface_id].format == Constants.SPICE_SURFACE_FMT_32_xRGB)
-        {
+        /* putImageData ignores the clip region, so a clipped draw goes
+           through drawImage, which blends: opaque pixels must carry a
+           full alpha byte first or they would show the surface through. */
+        if (opaque && ! o.has_alpha)
             stripAlpha(o.image_data);
-            canvas.context.putImageData(o.image_data, o.base.box.left, o.base.box.top);
-        }
-        else
-            putImageDataWithAlpha(canvas.context, o.image_data,
-                    o.base.box.left, o.base.box.top);
+        with_clip(canvas.context, o.base.clip, function()
+        {
+            putImageDataWithAlpha(canvas.context, o.image_data, left, top);
+        });
     }
+    else if (opaque)
+        canvas.context.putImageData(o.image_data, left, top);
     else
-        canvas.context.putImageData(o.image_data, o.base.box.left, o.base.box.top);
+        putImageDataWithAlpha(canvas.context, o.image_data, left, top);
 
     if (o.src_area.left > 0 || o.src_area.top > 0)
     {
@@ -999,7 +1097,11 @@ function handle_draw_jpeg_onload()
         t.globalCompositeOperation = 'source-in';
         t.drawImage(this, 0, 0);
 
-        context.drawImage(c, this.o.base.box.left, this.o.base.box.top);
+        var img = this;
+        with_clip(context, this.o.base.clip, function()
+        {
+            context.drawImage(c, img.o.base.box.left, img.o.base.box.top);
+        });
 
         if (this.o.descriptor &&
             (this.o.descriptor.flags & Constants.SPICE_IMAGE_FLAGS_CACHE_ME))
@@ -1015,12 +1117,11 @@ function handle_draw_jpeg_onload()
     }
     else
     {
-        context.drawImage(this, this.o.base.box.left, this.o.base.box.top);
-
-        // Give the Garbage collector a clue to recycle this; avoids
-        //  fairly massive memory leaks during video playback
-        this.onload = undefined;
-        this.src = Utils.EMPTY_GIF_IMAGE;
+        var img = this;
+        with_clip(context, this.o.base.clip, function()
+        {
+            context.drawImage(img, img.o.base.box.left, img.o.base.box.top);
+        });
 
         if (this.o.descriptor &&
             (this.o.descriptor.flags & Constants.SPICE_IMAGE_FLAGS_CACHE_ME))
@@ -1028,11 +1129,19 @@ function handle_draw_jpeg_onload()
             if (! ("cache" in this.o.sc))
                 this.o.sc.cache = {};
 
-            this.o.sc.cache[this.o.descriptor.id] =
-                context.getImageData(this.o.base.box.left, this.o.base.box.top,
-                    this.o.base.box.right - this.o.base.box.left,
-                    this.o.base.box.bottom - this.o.base.box.top);
+            var width = this.o.base.box.right - this.o.base.box.left;
+            var height = this.o.base.box.bottom - this.o.base.box.top;
+            /* The cache wants the whole image; a clipped draw left only
+               part of it on the surface. */
+            this.o.sc.cache[this.o.descriptor.id] = is_clipped(this.o.base.clip) ?
+                image_to_image_data(this, width, height) :
+                context.getImageData(this.o.base.box.left, this.o.base.box.top, width, height);
         }
+
+        // Give the Garbage collector a clue to recycle this; avoids
+        //  fairly massive memory leaks during video playback
+        this.onload = undefined;
+        this.src = Utils.EMPTY_GIF_IMAGE;
     }
 
     if (temp_canvas == null)
