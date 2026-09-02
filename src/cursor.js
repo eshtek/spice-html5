@@ -65,7 +65,7 @@ SpiceCursorConn.prototype.process_channel_message = function(msg)
         DEBUG > 1 && console.log("SpiceMsgCursorSet");
         if (cursor_set.cursor.flags & Constants.SPICE_CURSOR_FLAGS_NONE)
         {
-            document.getElementById(this.parent.screen_id).style.cursor = "none";
+            this.hide_cursor();
             return true;
         }
 
@@ -101,7 +101,7 @@ SpiceCursorConn.prototype.process_channel_message = function(msg)
     if (msg.type == Constants.SPICE_MSG_CURSOR_HIDE)
     {
         DEBUG > 1 && console.log("SpiceMsgCursorHide");
-        document.getElementById(this.parent.screen_id).style.cursor = "none";
+        this.hide_cursor();
         return true;
     }
 
@@ -261,29 +261,45 @@ SpiceCursorConn.prototype.set_cursor = function(cursor)
     screen.style.cursor = curstr;
     if (window.getComputedStyle(screen, null).cursor == 'auto')
         SpiceSimulateCursor.simulate_cursor(this, cursor, screen, pngstr);
-    else if (this.spice_simulated_cursor)
+    else
     {
         /* This cursor took effect natively, so drop the simulated one
            left by an earlier browser-rejected cursor; the mousemove
            handler would otherwise keep painting it alongside the real
            cursor forever. */
-        this.spice_simulated_cursor.spice_screen.removeChild(this.spice_simulated_cursor);
-        delete this.spice_simulated_cursor;
+        this.remove_simulated_cursor();
     }
     return true;
 }
 
+/* A hidden pointer is hidden whichever way the last shape was shown:
+   the CSS cursor goes to none, and a simulated cursor image is removed,
+   or the mousemove handler would keep painting it. */
+SpiceCursorConn.prototype.hide_cursor = function()
+{
+    document.getElementById(this.parent.screen_id).style.cursor = "none";
+    this.remove_simulated_cursor();
+}
+
+SpiceCursorConn.prototype.remove_simulated_cursor = function()
+{
+    if (! this.spice_simulated_cursor)
+        return;
+    if (this.spice_simulated_cursor.parentNode)
+        this.spice_simulated_cursor.parentNode.removeChild(this.spice_simulated_cursor);
+    delete this.spice_simulated_cursor;
+}
+
 SpiceCursorConn.prototype.cleanup = function()
 {
-    /* The simulated cursor lives in the screen div, which outlives the
-       connection; without this each torn-down session that entered
-       simulation mode left a frozen cursor image over the next one. */
-    if (this.spice_simulated_cursor)
-    {
-        if (this.spice_simulated_cursor.parentNode)
-            this.spice_simulated_cursor.parentNode.removeChild(this.spice_simulated_cursor);
-        delete this.spice_simulated_cursor;
-    }
+    /* The screen div outlives the connection: a simulated cursor left in
+       it would sit frozen over the next session, and a guest that ended
+       with its pointer hidden (or a custom shape) would leave the next
+       one without a visible pointer until it sends a shape of its own. */
+    this.remove_simulated_cursor();
+    var screen = document.getElementById(this.parent.screen_id);
+    if (screen)
+        screen.style.cursor = "auto";
     SpiceConn.prototype.cleanup.call(this);
 }
 
