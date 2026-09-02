@@ -350,12 +350,6 @@ SpiceMainConn.prototype.stop = function(msg)
 {
     this.state = "closing";
 
-    if (this.paste_listener)
-    {
-        document.removeEventListener('paste', this.paste_listener, true);
-        this.paste_listener = undefined;
-    }
-
     if (this.inputs)
     {
         this.inputs.cleanup();
@@ -666,8 +660,32 @@ SpiceMainConn.prototype.send_clipboard_text = function(text)
    with no permission involved, so cache it and tell the guest the
    clipboard changed; the guest then requests it through the normal
    path and gets it from the cache. */
+/* The paste listener is on the document, so it outlives any exit the
+   library takes on its own (connect timeout, refused socket, rejected
+   password). cleanup() covers the timeout; the listener drops itself on
+   the first paste after any other exit, so a page that retries without
+   calling stop() does not accumulate one dead session per attempt. */
+SpiceMainConn.prototype.remove_paste_listener = function()
+{
+    if (! this.paste_listener)
+        return;
+    document.removeEventListener('paste', this.paste_listener, true);
+    this.paste_listener = undefined;
+}
+
+SpiceMainConn.prototype.cleanup = function()
+{
+    this.remove_paste_listener();
+    SpiceConn.prototype.cleanup.call(this);
+}
+
 SpiceMainConn.prototype.handle_browser_paste = function(e)
 {
+    if (! this.ws || this.ws.readyState !== WebSocket.OPEN)
+    {
+        this.remove_paste_listener();
+        return;
+    }
     if (! e.clipboardData)
         return;
 
