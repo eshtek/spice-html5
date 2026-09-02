@@ -175,7 +175,7 @@ function revoke_jpeg_image_url(img)
 function handle_draw_jpeg_onerror()
 {
     revoke_jpeg_image_url(this);
-    if ("streams" in this.o.sc && this.o.sc.streams[this.o.id])
+    if (this.o.sc.streams && this.o.sc.streams[this.o.id])
         this.o.sc.streams[this.o.id].frames_loading--;
 }
 
@@ -1071,7 +1071,7 @@ function handle_draw_jpeg_onload()
        blob stays registered for the life of the page. */
     revoke_jpeg_image_url(this);
 
-    if ("streams" in this.o.sc && this.o.sc.streams[this.o.id])
+    if (this.o.sc.streams && this.o.sc.streams[this.o.id])
         this.o.sc.streams[this.o.id].frames_loading--;
 
     /*------------------------------------------------------------
