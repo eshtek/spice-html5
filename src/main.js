@@ -141,7 +141,14 @@ SpiceMainConn.prototype.process_channel_message = function(msg)
 
     if (msg.type == Constants.SPICE_MSG_MAIN_MULTI_MEDIA_TIME)
     {
-        this.known_unimplemented(msg.type, "Main Multi Media Time");
+        /* The server's multimedia clock. relative_now() estimates it from
+           the value seeded at INIT plus elapsed wall time, which drifts as
+           the two clocks diverge, and stream frames are scheduled and
+           reported against that estimate. This message is the server
+           resynchronising it. */
+        var mm = new Messages.SpiceMsgMainMultiMediaTime(msg.data);
+        this.our_mm_time = Date.now();
+        this.mm_time = mm.time;
         return true;
     }
 
