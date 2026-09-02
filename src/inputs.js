@@ -23,6 +23,7 @@ import { Constants } from './enums.js';
 import { KeyNames } from './atKeynames.js';
 import { SpiceConn } from './spiceconn.js';
 import { DEBUG } from './utils.js';
+import { code_to_scancode } from './code_to_scancode.js';
 
 /*----------------------------------------------------------------------------
  ** Modifier Keystates
@@ -308,6 +309,168 @@ function check_and_update_modifiers(e, code, sc)
     }
 }
 
+/*----------------------------------------------------------------------------
+**  typeText
+**      Deliver a string to the guest as synthetic keystrokes on the inputs
+**  channel. The inputs channel speaks PC scancodes — positions on a physical
+**  keyboard, not characters — so this maps each character to the key that
+**  produces it on a US layout. A guest configured for another keymap will
+**  type different characters, and anything a US layout cannot produce with
+**  at most Shift (AltGr combinations, dead keys, non-ASCII) cannot be
+**  expressed at all; such characters are skipped and reported back.
+**--------------------------------------------------------------------------*/
+
+/* character → [KeyboardEvent.code, needs-shift] on a US layout. */
+var US_TYPEABLE = (function ()
+{
+    var map = {};
+    var i;
+
+    var letters = "abcdefghijklmnopqrstuvwxyz";
+    for (i = 0; i < letters.length; i++)
+    {
+        var code = "Key" + letters[i].toUpperCase();
+        map[letters[i]] = [code, false];
+        map[letters[i].toUpperCase()] = [code, true];
+    }
+
+    var digits = "1234567890";
+    var shifted_digits = "!@#$%^&*()";
+    for (i = 0; i < digits.length; i++)
+    {
+        map[digits[i]] = ["Digit" + digits[i], false];
+        map[shifted_digits[i]] = ["Digit" + digits[i], true];
+    }
+
+    var punctuation = [
+        ["-", "_", "Minus"],
+        ["=", "+", "Equal"],
+        ["[", "{", "BracketLeft"],
+        ["]", "}", "BracketRight"],
+        ["\\", "|", "Backslash"],
+        [";", ":", "Semicolon"],
+        ["'", "\"", "Quote"],
+        [",", "<", "Comma"],
+        [".", ">", "Period"],
+        ["/", "?", "Slash"],
+        ["`", "~", "Backquote"],
+    ];
+    for (i = 0; i < punctuation.length; i++)
+    {
+        map[punctuation[i][0]] = [punctuation[i][2], false];
+        map[punctuation[i][1]] = [punctuation[i][2], true];
+    }
+
+    map[" "] = ["Space", false];
+    map["\n"] = ["Enter", false];
+    map["\t"] = ["Tab", false];
+    return map;
+})();
+
+function send_scancode(sc, scancode, down)
+{
+    var msg = new Messages.SpiceMiniData();
+    var key;
+    if (down)
+    {
+        key = new Messages.SpiceMsgcKeyDown();
+        key.code = scancode;
+        msg.build_msg(Constants.SPICE_MSGC_INPUTS_KEY_DOWN, key);
+    }
+    else
+    {
+        key = new Messages.SpiceMsgcKeyUp();
+        /* Break code; every key this file types is a one-byte scancode. */
+        key.code = 0x80 | scancode;
+        msg.build_msg(Constants.SPICE_MSGC_INPUTS_KEY_UP, key);
+    }
+    sc.inputs.send_msg(msg);
+}
+
+/* A keystroke is a press and a release separated by time.  Sending both in
+   the same tick, as this once did, makes a guest drop characters: Windows in
+   particular discards a key whose break code arrives in the same instant as
+   its make code, and the loss is silent and intermittent — a pasted URL or
+   password arrives subtly wrong.  So hold each key down, and give Shift its
+   own settle time either side, before moving on. */
+var KEY_HOLD_MS = 12;
+var SHIFT_SETTLE_MS = 12;
+
+/* Resolves to { typed, skipped, aborted }: how many characters went out,
+   which distinct characters had no US-layout key, and whether the inputs
+   channel died mid-string. delay_ms is the gap between characters, which
+   paces a large paste so a guest's keyboard buffer is not flooded. */
+function typeText(sc, text, delay_ms)
+{
+    var delay = typeof delay_ms === 'number' ? delay_ms : 25;
+    /* A CRLF must land as a single Enter, not Enter twice. */
+    var chars = text.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+    var skipped = [];
+    var typed = 0;
+    var at = 0;
+
+    return new Promise(function (resolve)
+    {
+        function step()
+        {
+            if (!(sc && sc.inputs && sc.inputs.state === "ready"))
+            {
+                resolve({ typed: typed, skipped: skipped, aborted: at < chars.length });
+                return;
+            }
+            if (at >= chars.length)
+            {
+                resolve({ typed: typed, skipped: skipped, aborted: false });
+                return;
+            }
+
+            var ch = chars[at++];
+            var entry = US_TYPEABLE[ch];
+            var scancode = entry && code_to_scancode[entry[0]];
+            if (!scancode)
+            {
+                if (skipped.indexOf(ch) === -1)
+                    skipped.push(ch);
+                step();
+                return;
+            }
+
+            /* Each phase is [what to send, how long to wait after it], run in
+               order; the guest sees a press, a hold, and a release. */
+            var shifted = entry[1];
+            var phases = [];
+            if (shifted)
+                phases.push([function () { send_scancode(sc, KeyNames.KEY_ShiftL, true); }, SHIFT_SETTLE_MS]);
+            phases.push([function () { send_scancode(sc, scancode, true); }, KEY_HOLD_MS]);
+            phases.push([function () { send_scancode(sc, scancode, false); }, shifted ? SHIFT_SETTLE_MS : delay]);
+            if (shifted)
+                phases.push([function () { send_scancode(sc, KeyNames.KEY_ShiftL, false); }, delay]);
+            typed++;
+
+            var phase = 0;
+            (function run()
+            {
+                if (phase >= phases.length)
+                {
+                    step();
+                    return;
+                }
+                /* The channel can die mid-character; stop rather than send a
+                   press whose release will never follow. */
+                if (!(sc && sc.inputs && sc.inputs.state === "ready"))
+                {
+                    resolve({ typed: typed - 1, skipped: skipped, aborted: true });
+                    return;
+                }
+                var current = phases[phase++];
+                current[0]();
+                window.setTimeout(run, current[1]);
+            })();
+        }
+        step();
+    });
+}
+
 export {
   SpiceInputsConn,
   handle_mousemove,
@@ -318,4 +481,5 @@ export {
   handle_keydown,
   handle_keyup,
   sendCtrlAltDel,
+  typeText,
 };
