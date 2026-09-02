@@ -144,6 +144,8 @@ SpicePlaybackConn.prototype.check_playing = function()
 /* How far ahead of the clock a frame is scheduled when the cursor has
    fallen behind (start of stream, or after an underrun). */
 var WEBCODECS_LEAD_S = 0.05;
+/* The most audio allowed to be queued ahead of the clock. */
+var WEBCODECS_MAX_LEAD_S = 0.25;
 
 SpicePlaybackConn.prototype.process_webcodecs_message = function(msg)
 {
@@ -161,6 +163,8 @@ SpicePlaybackConn.prototype.process_webcodecs_message = function(msg)
 
         this.wc_channels = start.channels;
         this.wc_frequency = start.frequency;
+        this.wc_decoder_failed = false;
+        this.wc_resume_pending = false;
         this.setup_audio_context();
         /* A fresh stream; do not stitch its first frame onto the old
            stream's schedule. */
@@ -180,8 +184,10 @@ SpicePlaybackConn.prototype.process_webcodecs_message = function(msg)
 
         if (this.wc_mode == Constants.SPICE_AUDIO_DATA_MODE_RAW)
             this.schedule_raw_frame(data.data);
-        else
+        else if (this.wc_mode == Constants.SPICE_AUDIO_DATA_MODE_OPUS)
             this.decode_opus_frame(data);
+        /* A mode this player refused, or none yet: the packets are not
+           opus, so decoding them would only fail once per packet. */
         return true;
     }
 
@@ -192,6 +198,7 @@ SpicePlaybackConn.prototype.process_webcodecs_message = function(msg)
             mode.mode != Constants.SPICE_AUDIO_DATA_MODE_RAW)
         {
             this.log_err('This player cannot handle mode ' + mode.mode);
+            this.wc_mode = null;
             return true;
         }
         this.wc_mode = mode.mode;
@@ -256,11 +263,22 @@ SpicePlaybackConn.prototype.nudge_suspended_context = function()
         if (conn.wc_ctx)
             conn.wc_ctx.resume().catch(function () { });
     };
-    this.wc_ctx.resume().then(function ()
+    /* Chrome leaves a pre-gesture resume() pending rather than rejecting
+       it; every frame that arrives while suspended lands here, so keep
+       one request outstanding instead of one per packet. */
+    if (! this.wc_resume_pending)
     {
-        conn.milestone("context-running");
-    })
-    .catch(function () { });
+        this.wc_resume_pending = true;
+        this.wc_ctx.resume().then(function ()
+        {
+            conn.wc_resume_pending = false;
+            conn.milestone("context-running");
+        })
+        .catch(function ()
+        {
+            conn.wc_resume_pending = false;
+        });
+    }
     if (this.wc_ctx.state === 'suspended')
         this.arm_gesture_retry("audio output is suspended by the browser");
 }
@@ -269,6 +287,12 @@ SpicePlaybackConn.prototype.decode_opus_frame = function(data)
 {
     var conn = this;
 
+    /* A decoder that failed is not rebuilt per packet: the failure was
+       either the configuration (opus unsupported) or a stream this
+       browser cannot decode, and either way the next packet would fail
+       the same. The next PLAYBACK_START gets a fresh try. */
+    if (this.wc_decoder_failed)
+        return;
     if (! this.wc_decoder)
     {
         this.wc_decoder = new AudioDecoder({
@@ -276,6 +300,7 @@ SpicePlaybackConn.prototype.decode_opus_frame = function(data)
             error: function (e)
             {
                 conn.log_err('Opus decode failed: ' + e.message);
+                conn.wc_decoder_failed = true;
                 try { conn.wc_decoder.close(); } catch (err) { }
                 conn.wc_decoder = null;
             },
@@ -358,6 +383,15 @@ SpicePlaybackConn.prototype.schedule_buffer = function(buf)
     var now = ctx.currentTime;
     if (! this.wc_next_time || this.wc_next_time < now + 0.02)
         this.wc_next_time = now + WEBCODECS_LEAD_S;
+    /* After a stall the backlog arrives in a burst and would otherwise be
+       scheduled end to end, leaving the audio that far behind the guest
+       for the rest of the stream; the guest's audio is live, so drop
+       what would play too late instead of queueing it. */
+    if (this.wc_next_time - now > WEBCODECS_MAX_LEAD_S)
+    {
+        this.wc_drops = (this.wc_drops || 0) + 1;
+        return;
+    }
 
     var src = ctx.createBufferSource();
     src.buffer = buf;
