@@ -195,6 +195,8 @@ function handle_draw_jpeg_onerror()
     revoke_jpeg_image_url(this);
     if (this.o.sc.streams && this.o.sc.streams[this.o.id])
         this.o.sc.streams[this.o.id].frames_loading--;
+    /* An image that will never decode must not hold the queue. */
+    this.o.sc.mark_ready(this.o.op, null);
 }
 
 /*----------------------------------------------------------------------------
@@ -204,9 +206,122 @@ function handle_draw_jpeg_onerror()
 function SpiceDisplayConn()
 {
     SpiceConn.apply(this, arguments);
+    this.ops = [];
 }
 
 SpiceDisplayConn.prototype = Object.create(SpiceConn.prototype);
+
+/*----------------------------------------------------------------------------
+**  Draw queue
+**      Every drawing message becomes an op on one in-order queue, and a
+**      draw that decodes asynchronously (JPEG) holds the ops behind it
+**      until it is ready, so what the server sent after the JPEG lands
+**      after the JPEG. The queue is drained from a microtask at the end
+**      of the task that filled it, which is the websocket message: no
+**      added latency and no extra task per frame (a drain per animation
+**      frame cost 0.5 ms of task time per MJPEG frame). A drain spends
+**      at most FLUSH_BUDGET_MS and hands the rest to an animation frame
+**      so input stays responsive under a burst; a timer stands in for
+**      the frame in a hidden tab.
+**--------------------------------------------------------------------------*/
+var FLUSH_BUDGET_MS = 8;
+var FLUSH_FALLBACK_MS = 100;
+
+SpiceDisplayConn.prototype.enqueue = function(draw)
+{
+    var op = { ready: true, draw: draw };
+    this.ops.push(op);
+    this.schedule_flush();
+    return op;
+}
+
+/* An op whose draw is not known yet; mark_ready() supplies it. */
+SpiceDisplayConn.prototype.enqueue_pending = function()
+{
+    var op = { ready: false, draw: null };
+    this.ops.push(op);
+    return op;
+}
+
+SpiceDisplayConn.prototype.mark_ready = function(op, draw)
+{
+    op.draw = draw;
+    op.ready = true;
+    this.schedule_flush();
+}
+
+SpiceDisplayConn.prototype.schedule_flush = function()
+{
+    if (this.flush_frame !== undefined || this.flush_micro)
+        return;
+    var sc = this;
+    this.flush_micro = true;
+    Promise.resolve().then(function() { sc.flush_micro = false; if (sc.flush_frame === undefined) sc.flush(FLUSH_BUDGET_MS); });
+}
+
+SpiceDisplayConn.prototype.schedule_frame = function()
+{
+    if (this.flush_frame !== undefined)
+        return;
+    var sc = this;
+    this.flush_frame = window.requestAnimationFrame(function() { sc.flush(FLUSH_BUDGET_MS); });
+    this.flush_timer = window.setTimeout(function() { sc.flush(FLUSH_BUDGET_MS); }, FLUSH_FALLBACK_MS);
+}
+
+SpiceDisplayConn.prototype.cancel_flush = function()
+{
+    if (this.flush_frame !== undefined)
+    {
+        window.cancelAnimationFrame(this.flush_frame);
+        if (this.flush_timer !== undefined)
+            window.clearTimeout(this.flush_timer);
+        this.flush_frame = undefined;
+        this.flush_timer = undefined;
+    }
+}
+
+SpiceDisplayConn.prototype.flush = function(budget_ms)
+{
+    this.cancel_flush();
+    var deadline = performance.now() + budget_ms;
+    while (this.ops.length > 0 && this.ops[0].ready)
+    {
+        var op = this.ops.shift();
+        if (op.draw)
+            op.draw.call(this);
+        if (performance.now() > deadline && this.ops.length > 0 && this.ops[0].ready)
+        {
+            this.schedule_frame();
+            return;
+        }
+    }
+}
+
+/* Drain everything that can be drawn now. */
+SpiceDisplayConn.prototype.flush_all = function()
+{
+    this.flush(Infinity);
+}
+
+SpiceDisplayConn.prototype.drop_queue = function()
+{
+    this.cancel_flush();
+    this.ops = [];
+}
+
+/* Whether a surface captured when an op was queued is still the live
+   one: a queued draw for a surface destroyed and recreated since is moot. */
+SpiceDisplayConn.prototype.surface_live = function(surface)
+{
+    return surface !== undefined && this.surfaces !== undefined &&
+           this.surfaces[surface.surface_id] === surface;
+}
+
+SpiceDisplayConn.prototype.cleanup = function()
+{
+    this.drop_queue();
+    SpiceConn.prototype.cleanup.call(this);
+}
 SpiceDisplayConn.prototype.process_channel_message = function(msg)
 {
     if (msg.type == Constants.SPICE_MSG_DISPLAY_MODE)
@@ -225,7 +340,12 @@ SpiceDisplayConn.prototype.process_channel_message = function(msg)
     if (msg.type == Constants.SPICE_MSG_DISPLAY_RESET)
     {
         Utils.DEBUG > 2 && console.log("Display reset");
-        this.surfaces[this.primary_surface].canvas.context.restore();
+        var reset_surface = this.surfaces[this.primary_surface];
+        this.enqueue(function()
+        {
+            if (this.surface_live(reset_surface))
+                reset_surface.canvas.context.restore();
+        });
         return true;
     }
 
@@ -277,17 +397,23 @@ SpiceDisplayConn.prototype.process_channel_message = function(msg)
             else if (draw_copy.data.src_bitmap.descriptor.type == Constants.SPICE_IMAGE_TYPE_FROM_CACHE ||
                     draw_copy.data.src_bitmap.descriptor.type == Constants.SPICE_IMAGE_TYPE_FROM_CACHE_LOSSLESS)
             {
-                if (! this.cache || ! this.cache[draw_copy.data.src_bitmap.descriptor.id])
-                {
-                    this.log_warn("FIXME: DrawCopy did not find image id " + draw_copy.data.src_bitmap.descriptor.id + " in cache.");
-                    return false;
-                }
-
+                /* A cached JPEG is stored when its draw runs, which may be
+                   after this message arrives; an image not in the cache
+                   yet is looked up again when this op's turn comes. */
+                var cache_id = draw_copy.data.src_bitmap.descriptor.id;
+                var sc = this;
                 return this.draw_copy_helper(
                     { base: draw_copy.base,
                       src_area: draw_copy.data.src_area,
-                      image_data: this.cache[draw_copy.data.src_bitmap.descriptor.id],
-                      tag: "copycache." + draw_copy.data.src_bitmap.descriptor.id,
+                      image_data: this.cache ? this.cache[cache_id] : undefined,
+                      resolve: function()
+                      {
+                          if (sc.cache && sc.cache[cache_id])
+                              return sc.cache[cache_id];
+                          sc.log_warn("FIXME: DrawCopy did not find image id " + cache_id + " in cache.");
+                          return undefined;
+                      },
+                      tag: "copycache." + cache_id,
                       has_alpha: true, /* FIXME - may want this to be false... */
                       descriptor : draw_copy.data.src_bitmap.descriptor
                     });
@@ -296,17 +422,13 @@ SpiceDisplayConn.prototype.process_channel_message = function(msg)
             }
             else if (draw_copy.data.src_bitmap.descriptor.type == Constants.SPICE_IMAGE_TYPE_SURFACE)
             {
-                var source_context = this.surfaces[draw_copy.data.src_bitmap.surface_id].canvas.context;
-                var target_context = this.surfaces[draw_copy.base.surface_id].canvas.context;
-
-                var source_img = source_context.getImageData(
-                        draw_copy.data.src_area.left, draw_copy.data.src_area.top,
-                        draw_copy.data.src_area.right - draw_copy.data.src_area.left,
-                        draw_copy.data.src_area.bottom - draw_copy.data.src_area.top);
+                var source_surface = this.surfaces[draw_copy.data.src_bitmap.surface_id];
+                var src_area = draw_copy.data.src_area;
                 var computed_src_area = new SpiceRect;
                 computed_src_area.top = computed_src_area.left = 0;
-                computed_src_area.right = source_img.width;
-                computed_src_area.bottom = source_img.height;
+                computed_src_area.right = src_area.right - src_area.left;
+                computed_src_area.bottom = src_area.bottom - src_area.top;
+                var sc = this;
 
                 /* FIXME - there is a potential optimization here.
                            That is, if the surface is from 0,0, and
@@ -314,12 +436,21 @@ SpiceDisplayConn.prototype.process_channel_message = function(msg)
                            be able to just do a drawImage, which should
                            save time.  */
 
+                /* The source is read when this op runs, after everything
+                   queued for it has been drawn. */
                 return this.draw_copy_helper(
                     { base: draw_copy.base,
                       src_area: computed_src_area,
-                      image_data: source_img,
+                      resolve: function()
+                      {
+                          if (! sc.surface_live(source_surface))
+                              return undefined;
+                          return source_surface.canvas.context.getImageData(
+                              src_area.left, src_area.top,
+                              computed_src_area.right, computed_src_area.bottom);
+                      },
                       tag: "copysurf." + draw_copy.data.src_bitmap.surface_id,
-                      has_alpha: this.surfaces[draw_copy.data.src_bitmap.surface_id].format == Constants.SPICE_SURFACE_FMT_32_xRGB ? false : true,
+                      has_alpha: source_surface.format != Constants.SPICE_SURFACE_FMT_32_xRGB,
                       descriptor : draw_copy.data.src_bitmap.descriptor
                     });
             }
@@ -337,6 +468,8 @@ SpiceDisplayConn.prototype.process_channel_message = function(msg)
                       tag: "jpeg." + draw_copy.data.src_bitmap.surface_id,
                       descriptor : draw_copy.data.src_bitmap.descriptor,
                       sc : this,
+                      surface : this.surfaces[draw_copy.base.surface_id],
+                      op : this.enqueue_pending(),
                     };
                 img.onload = handle_draw_jpeg_onload;
                 img.onerror = handle_draw_jpeg_onerror;
@@ -358,6 +491,8 @@ SpiceDisplayConn.prototype.process_channel_message = function(msg)
                       tag: "jpeg." + draw_copy.data.src_bitmap.surface_id,
                       descriptor : draw_copy.data.src_bitmap.descriptor,
                       sc : this,
+                      surface : this.surfaces[draw_copy.base.surface_id],
+                      op : this.enqueue_pending(),
                     };
 
                 if (this.surfaces[draw_copy.base.surface_id].format == Constants.SPICE_SURFACE_FMT_32_ARGB)
@@ -457,32 +592,39 @@ SpiceDisplayConn.prototype.process_channel_message = function(msg)
             // FIXME - do brushes ever have alpha?
             var color = draw_fill.data.brush.color & 0xffffff;
             var color_str = "rgb(" + (color >> 16) + ", " + ((color >> 8) & 0xff) + ", " + (color & 0xff) + ")";
-            var fill_context = this.surfaces[draw_fill.base.surface_id].canvas.context;
-            fill_context.fillStyle = color_str;
+            var fill_surface = this.surfaces[draw_fill.base.surface_id];
 
-            with_clip(fill_context, draw_fill.base.clip, function()
+            this.enqueue(function()
             {
-                fill_context.fillRect(
-                    draw_fill.base.box.left, draw_fill.base.box.top,
-                    draw_fill.base.box.right - draw_fill.base.box.left,
-                    draw_fill.base.box.bottom - draw_fill.base.box.top);
+                if (! this.surface_live(fill_surface))
+                    return;
+                var fill_context = fill_surface.canvas.context;
+                fill_context.fillStyle = color_str;
+
+                with_clip(fill_context, draw_fill.base.clip, function()
+                {
+                    fill_context.fillRect(
+                        draw_fill.base.box.left, draw_fill.base.box.top,
+                        draw_fill.base.box.right - draw_fill.base.box.left,
+                        draw_fill.base.box.bottom - draw_fill.base.box.top);
+                });
+
+                if (Utils.DUMP_DRAWS && this.parent.dump_id)
+                {
+                    var debug_canvas = document.createElement("canvas");
+                    debug_canvas.setAttribute('width', fill_surface.canvas.width);
+                    debug_canvas.setAttribute('height', fill_surface.canvas.height);
+                    debug_canvas.setAttribute('id', "fillbrush." + draw_fill.base.surface_id + "." + fill_surface.draw_count);
+                    debug_canvas.getContext("2d").fillStyle = color_str;
+                    debug_canvas.getContext("2d").fillRect(
+                        draw_fill.base.box.left, draw_fill.base.box.top,
+                        draw_fill.base.box.right - draw_fill.base.box.left,
+                        draw_fill.base.box.bottom - draw_fill.base.box.top);
+                    document.getElementById(this.parent.dump_id).appendChild(debug_canvas);
+                }
+
+                fill_surface.draw_count++;
             });
-
-            if (Utils.DUMP_DRAWS && this.parent.dump_id)
-            {
-                var debug_canvas = document.createElement("canvas");
-                debug_canvas.setAttribute('width', this.surfaces[draw_fill.base.surface_id].canvas.width);
-                debug_canvas.setAttribute('height', this.surfaces[draw_fill.base.surface_id].canvas.height);
-                debug_canvas.setAttribute('id', "fillbrush." + draw_fill.base.surface_id + "." + this.surfaces[draw_fill.base.surface_id].draw_count);
-                debug_canvas.getContext("2d").fillStyle = color_str;
-                debug_canvas.getContext("2d").fillRect(
-                    draw_fill.base.box.left, draw_fill.base.box.top,
-                    draw_fill.base.box.right - draw_fill.base.box.left,
-                    draw_fill.base.box.bottom - draw_fill.base.box.top);
-                document.getElementById(this.parent.dump_id).appendChild(debug_canvas);
-            }
-
-            this.surfaces[draw_fill.base.surface_id].draw_count++;
 
         }
         else
@@ -552,41 +694,47 @@ SpiceDisplayConn.prototype.process_channel_message = function(msg)
 
         Utils.DEBUG > 1 && this.log_draw("CopyBits", copy_bits);
 
-        var source_canvas = this.surfaces[copy_bits.base.surface_id].canvas;
-        var source_context = source_canvas.context;
+        var copy_surface = this.surfaces[copy_bits.base.surface_id];
 
-        var width = source_canvas.width - copy_bits.src_pos.x;
-        var height = source_canvas.height - copy_bits.src_pos.y;
-        if (width > (copy_bits.base.box.right - copy_bits.base.box.left))
-            width = copy_bits.base.box.right - copy_bits.base.box.left;
-        if (height > (copy_bits.base.box.bottom - copy_bits.base.box.top))
-            height = copy_bits.base.box.bottom - copy_bits.base.box.top;
-
-        /* drawImage from a canvas onto itself snapshots the source rect
-           first (per the 2D canvas spec), so this replaces a getImageData
-           round-trip — a full GPU->CPU sync readback per scroll — with a
-           blit that stays on the GPU. */
-        with_clip(source_context, copy_bits.base.clip, function()
+        this.enqueue(function()
         {
-            source_context.drawImage(source_canvas,
-                    copy_bits.src_pos.x, copy_bits.src_pos.y, width, height,
-                    copy_bits.base.box.left, copy_bits.base.box.top, width, height);
+            if (! this.surface_live(copy_surface))
+                return;
+            var source_canvas = copy_surface.canvas;
+            var source_context = source_canvas.context;
+
+            var width = source_canvas.width - copy_bits.src_pos.x;
+            var height = source_canvas.height - copy_bits.src_pos.y;
+            if (width > (copy_bits.base.box.right - copy_bits.base.box.left))
+                width = copy_bits.base.box.right - copy_bits.base.box.left;
+            if (height > (copy_bits.base.box.bottom - copy_bits.base.box.top))
+                height = copy_bits.base.box.bottom - copy_bits.base.box.top;
+
+            /* drawImage from a canvas onto itself snapshots the source rect
+               first (per the 2D canvas spec), so this replaces a getImageData
+               round-trip — a full GPU->CPU sync readback per scroll — with a
+               blit that stays on the GPU. */
+            with_clip(source_context, copy_bits.base.clip, function()
+            {
+                source_context.drawImage(source_canvas,
+                        copy_bits.src_pos.x, copy_bits.src_pos.y, width, height,
+                        copy_bits.base.box.left, copy_bits.base.box.top, width, height);
+            });
+
+            if (Utils.DUMP_DRAWS && this.parent.dump_id)
+            {
+                var debug_canvas = document.createElement("canvas");
+                debug_canvas.setAttribute('width', width);
+                debug_canvas.setAttribute('height', height);
+                debug_canvas.setAttribute('id', "copybits" + copy_bits.base.surface_id + "." + copy_surface.draw_count);
+                debug_canvas.getContext("2d").drawImage(source_canvas,
+                    copy_bits.base.box.left, copy_bits.base.box.top, width, height,
+                    0, 0, width, height);
+                document.getElementById(this.parent.dump_id).appendChild(debug_canvas);
+            }
+
+            copy_surface.draw_count++;
         });
-
-        if (Utils.DUMP_DRAWS && this.parent.dump_id)
-        {
-            var debug_canvas = document.createElement("canvas");
-            debug_canvas.setAttribute('width', width);
-            debug_canvas.setAttribute('height', height);
-            debug_canvas.setAttribute('id', "copybits" + copy_bits.base.surface_id + "." + this.surfaces[copy_bits.base.surface_id].draw_count);
-            debug_canvas.getContext("2d").drawImage(source_canvas,
-                copy_bits.base.box.left, copy_bits.base.box.top, width, height,
-                0, 0, width, height);
-            document.getElementById(this.parent.dump_id).appendChild(debug_canvas);
-        }
-
-
-        this.surfaces[copy_bits.base.surface_id].draw_count++;
         return true;
     }
 
@@ -664,7 +812,14 @@ SpiceDisplayConn.prototype.process_channel_message = function(msg)
     {
         var m = new Messages.SpiceMsgSurfaceDestroy(msg.data);
         Utils.DEBUG > 1 && console.log(this.type + ": MsgSurfaceDestroy id " + m.surface_id);
-        this.delete_surface(m.surface_id);
+        var doomed = this.surfaces ? this.surfaces[m.surface_id] : undefined;
+        if (doomed === undefined)
+            return true;
+        this.enqueue(function()
+        {
+            if (this.surface_live(doomed))
+                this.delete_surface(m.surface_id);
+        });
         return true;
     }
 
@@ -847,59 +1002,78 @@ SpiceDisplayConn.prototype.delete_surface = function(surface_id)
 
 SpiceDisplayConn.prototype.draw_copy_helper = function(o)
 {
+    o.surface = this.surfaces[o.base.surface_id];
 
-    var canvas = this.surfaces[o.base.surface_id].canvas;
-    var left = o.base.box.left;
-    var top = o.base.box.top;
     /* FIXME - This is based on trial + error, not a serious thoughtful
                analysis of what Spice requires.  See display.js for more. */
-    var opaque = ! o.has_alpha ||
-        this.surfaces[o.base.surface_id].format == Constants.SPICE_SURFACE_FMT_32_xRGB;
-    if (opaque && o.has_alpha)
-        stripAlpha(o.image_data);
+    o.opaque = ! o.has_alpha || o.surface.format == Constants.SPICE_SURFACE_FMT_32_xRGB;
+
+    /* The cache is filled now, not when the op runs, so a draw from the
+       cache that follows this message finds the image whether or not
+       either has been drawn yet. */
+    if (o.image_data && o.descriptor && (o.descriptor.flags & Constants.SPICE_IMAGE_FLAGS_CACHE_ME))
+    {
+        if (o.opaque && o.has_alpha)
+            stripAlpha(o.image_data);
+        if (! ("cache" in this))
+            this.cache = {};
+        this.cache[o.descriptor.id] = o.image_data;
+    }
+
+    this.enqueue(function()
+    {
+        this.draw_copy_now(o);
+    });
+    return true;
+}
+
+SpiceDisplayConn.prototype.draw_copy_now = function(o)
+{
+    if (! this.surface_live(o.surface))
+        return;
+    var image_data = o.image_data || (o.resolve ? o.resolve() : undefined);
+    if (! image_data)
+        return;
+
+    var canvas = o.surface.canvas;
+    var left = o.base.box.left;
+    var top = o.base.box.top;
+    if (o.opaque && o.has_alpha)
+        stripAlpha(image_data);
 
     if (is_clipped(o.base.clip))
     {
-        if (opaque)
-            putImageDataClipped(canvas.context, o.image_data, left, top, o.base.clip);
+        if (o.opaque)
+            putImageDataClipped(canvas.context, image_data, left, top, o.base.clip);
         else
             with_clip(canvas.context, o.base.clip, function()
             {
-                putImageDataWithAlpha(canvas.context, o.image_data, left, top);
+                putImageDataWithAlpha(canvas.context, image_data, left, top);
             });
     }
-    else if (opaque)
-        canvas.context.putImageData(o.image_data, left, top);
+    else if (o.opaque)
+        canvas.context.putImageData(image_data, left, top);
     else
-        putImageDataWithAlpha(canvas.context, o.image_data, left, top);
+        putImageDataWithAlpha(canvas.context, image_data, left, top);
 
     if (o.src_area.left > 0 || o.src_area.top > 0)
     {
         this.log_warn("FIXME: DrawCopy not shifting draw copies just yet...");
     }
 
-    if (o.descriptor && (o.descriptor.flags & Constants.SPICE_IMAGE_FLAGS_CACHE_ME))
-    {
-        if (! ("cache" in this))
-            this.cache = {};
-        this.cache[o.descriptor.id] = o.image_data;
-    }
-
     if (Utils.DUMP_DRAWS && this.parent.dump_id)
     {
         var debug_canvas = document.createElement("canvas");
-        debug_canvas.setAttribute('width', o.image_data.width);
-        debug_canvas.setAttribute('height', o.image_data.height);
+        debug_canvas.setAttribute('width', image_data.width);
+        debug_canvas.setAttribute('height', image_data.height);
         debug_canvas.setAttribute('id', o.tag + "." +
-            this.surfaces[o.base.surface_id].draw_count + "." +
+            o.surface.draw_count + "." +
             o.base.surface_id + "@" + o.base.box.left + "x" +  o.base.box.top);
-        debug_canvas.getContext("2d").putImageData(o.image_data, 0, 0);
+        debug_canvas.getContext("2d").putImageData(image_data, 0, 0);
         document.getElementById(this.parent.dump_id).appendChild(debug_canvas);
     }
 
-    this.surfaces[o.base.surface_id].draw_count++;
-
-    return true;
+    o.surface.draw_count++;
 }
 
 
@@ -1044,6 +1218,7 @@ SpiceDisplayConn.prototype.destroy_stream = function(id)
 
 SpiceDisplayConn.prototype.destroy_surfaces = function()
 {
+    this.drop_queue();
     for (var s in this.surfaces)
     {
         this.delete_surface(this.surfaces[s].surface_id);
@@ -1080,9 +1255,6 @@ function handle_mouseout(e)
 
 function handle_draw_jpeg_onload()
 {
-    var temp_canvas = null;
-    var context;
-
     /* The decoded bitmap survives the revoke; without it every frame's
        blob stays registered for the life of the page. */
     revoke_jpeg_image_url(this);
@@ -1090,112 +1262,112 @@ function handle_draw_jpeg_onload()
     if (this.o.sc.streams && this.o.sc.streams[this.o.id])
         this.o.sc.streams[this.o.id].frames_loading--;
 
+    var img = this;
+    this.o.sc.mark_ready(this.o.op, function() { draw_jpeg_now(img); });
+}
+
+/* Runs from the draw queue once every op queued before the JPEG has run. */
+function draw_jpeg_now(img)
+{
+    var sc = img.o.sc;
+    var o = img.o;
+
     /*------------------------------------------------------------
     ** FIXME:
     **  The helper should be extended to be able to handle actual HtmlImageElements
     **  ...and the cache should be modified to do so as well
     **----------------------------------------------------------*/
-    if (this.o.sc.surfaces === undefined ||
-        this.o.sc.surfaces[this.o.base.surface_id] === undefined)
+    if (! sc.surface_live(o.surface))
     {
-        // This can happen; if the jpeg image loads after our surface
-        //  has been destroyed (e.g. open a menu, close it quickly) or
-        //  after the whole connection was stopped, we'll find we have
-        //  no surface.
-        Utils.DEBUG > 2 && this.o.sc.log_info("Discarding jpeg; presumed lost surface " + this.o.base.surface_id);
-        temp_canvas = document.createElement("canvas");
-        temp_canvas.setAttribute('width', this.o.base.box.right);
-        temp_canvas.setAttribute('height', this.o.base.box.bottom);
-        context = temp_canvas.getContext("2d");
+        // The surface was destroyed (e.g. open a menu, close it quickly)
+        //  or the connection stopped while the image was decoding.
+        Utils.DEBUG > 2 && sc.log_info("Discarding jpeg; presumed lost surface " + o.base.surface_id);
+        img.onload = undefined;
+        img.src = Utils.EMPTY_GIF_IMAGE;
+        return;
     }
-    else
-        context = this.o.sc.surfaces[this.o.base.surface_id].canvas.context;
+    var context = o.surface.canvas.context;
 
-    if (this.alpha_img)
+    if (img.alpha_img)
     {
         var c = document.createElement("canvas");
         var t = c.getContext("2d");
-        c.setAttribute('width', this.alpha_img.width);
-        c.setAttribute('height', this.alpha_img.height);
-        t.putImageData(this.alpha_img, 0, 0);
+        c.setAttribute('width', img.alpha_img.width);
+        c.setAttribute('height', img.alpha_img.height);
+        t.putImageData(img.alpha_img, 0, 0);
         t.globalCompositeOperation = 'source-in';
-        t.drawImage(this, 0, 0);
+        t.drawImage(img, 0, 0);
 
-        var img = this;
-        with_clip(context, this.o.base.clip, function()
+        with_clip(context, o.base.clip, function()
         {
-            context.drawImage(c, img.o.base.box.left, img.o.base.box.top);
+            context.drawImage(c, o.base.box.left, o.base.box.top);
         });
 
-        if (this.o.descriptor &&
-            (this.o.descriptor.flags & Constants.SPICE_IMAGE_FLAGS_CACHE_ME))
+        if (o.descriptor &&
+            (o.descriptor.flags & Constants.SPICE_IMAGE_FLAGS_CACHE_ME))
         {
-            if (! ("cache" in this.o.sc))
-                this.o.sc.cache = {};
+            if (! ("cache" in sc))
+                sc.cache = {};
 
-            this.o.sc.cache[this.o.descriptor.id] =
+            sc.cache[o.descriptor.id] =
                 t.getImageData(0, 0,
-                    this.alpha_img.width,
-                    this.alpha_img.height);
+                    img.alpha_img.width,
+                    img.alpha_img.height);
         }
     }
     else
     {
-        var img = this;
-        with_clip(context, this.o.base.clip, function()
+        with_clip(context, o.base.clip, function()
         {
-            if (img.o.bottom_up)
+            if (o.bottom_up)
             {
                 /* The encoder emits a bottom-up frame's rows in memory
                    order, last row first; flip it back while blitting. */
                 context.save();
-                context.translate(img.o.base.box.left, img.o.base.box.top + img.height);
+                context.translate(o.base.box.left, o.base.box.top + img.height);
                 context.scale(1, -1);
                 context.drawImage(img, 0, 0);
                 context.restore();
             }
             else
-                context.drawImage(img, img.o.base.box.left, img.o.base.box.top);
+                context.drawImage(img, o.base.box.left, o.base.box.top);
         });
 
-        if (this.o.descriptor &&
-            (this.o.descriptor.flags & Constants.SPICE_IMAGE_FLAGS_CACHE_ME))
+        if (o.descriptor &&
+            (o.descriptor.flags & Constants.SPICE_IMAGE_FLAGS_CACHE_ME))
         {
-            if (! ("cache" in this.o.sc))
-                this.o.sc.cache = {};
+            if (! ("cache" in sc))
+                sc.cache = {};
 
-            var width = this.o.base.box.right - this.o.base.box.left;
-            var height = this.o.base.box.bottom - this.o.base.box.top;
+            var width = o.base.box.right - o.base.box.left;
+            var height = o.base.box.bottom - o.base.box.top;
             /* The cache wants the whole image; a clipped draw left only
                part of it on the surface. */
-            this.o.sc.cache[this.o.descriptor.id] = is_clipped(this.o.base.clip) ?
-                image_to_image_data(this, width, height) :
-                context.getImageData(this.o.base.box.left, this.o.base.box.top, width, height);
+            sc.cache[o.descriptor.id] = is_clipped(o.base.clip) ?
+                image_to_image_data(img, width, height) :
+                context.getImageData(o.base.box.left, o.base.box.top, width, height);
         }
 
         // Give the Garbage collector a clue to recycle this; avoids
         //  fairly massive memory leaks during video playback
-        this.onload = undefined;
-        this.src = Utils.EMPTY_GIF_IMAGE;
+        img.onload = undefined;
+        img.src = Utils.EMPTY_GIF_IMAGE;
     }
 
-    if (temp_canvas == null)
+    if (Utils.DUMP_DRAWS && sc.parent.dump_id)
     {
-        if (Utils.DUMP_DRAWS && this.o.sc.parent.dump_id)
-        {
-            var debug_canvas = document.createElement("canvas");
-            debug_canvas.setAttribute('id', this.o.tag + "." +
-                this.o.sc.surfaces[this.o.base.surface_id].draw_count + "." +
-                this.o.base.surface_id + "@" + this.o.base.box.left + "x" +  this.o.base.box.top);
-            debug_canvas.getContext("2d").drawImage(this, 0, 0);
-            document.getElementById(this.o.sc.parent.dump_id).appendChild(debug_canvas);
-        }
-
-        this.o.sc.surfaces[this.o.base.surface_id].draw_count++;
+        var debug_canvas = document.createElement("canvas");
+        debug_canvas.setAttribute('id', o.tag + "." +
+            o.surface.draw_count + "." +
+            o.base.surface_id + "@" + o.base.box.left + "x" +  o.base.box.top);
+        debug_canvas.getContext("2d").drawImage(img, 0, 0);
+        document.getElementById(sc.parent.dump_id).appendChild(debug_canvas);
     }
 
-    if (this.o.sc.streams && this.o.sc.streams[this.o.id] && "report" in this.o.sc.streams[this.o.id])
-        process_stream_data_report(this.o.sc, this.o.id, this.o.msg_mmtime, this.o.msg_mmtime - this.o.sc.parent.relative_now());
+    o.surface.draw_count++;
+
+    if (sc.streams && sc.streams[o.id] && "report" in sc.streams[o.id])
+        process_stream_data_report(sc, o.id, o.msg_mmtime, o.msg_mmtime - sc.parent.relative_now());
 }
 
 function process_mjpeg_stream_data(sc, m, time_until_due)
@@ -1223,6 +1395,8 @@ function process_mjpeg_stream_data(sc, m, time_until_due)
           id : m.base.id,
           msg_mmtime : m.base.multi_media_time,
           bottom_up : ! (sc.streams[m.base.id].flags & Constants.SPICE_STREAM_FLAGS_TOP_DOWN),
+          surface : sc.surfaces ? sc.surfaces[strm_base.surface_id] : undefined,
+          op : sc.enqueue_pending(),
         };
     img.onload = handle_draw_jpeg_onload;
     img.onerror = handle_draw_jpeg_onerror;
