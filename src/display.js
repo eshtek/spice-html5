@@ -685,6 +685,8 @@ SpiceDisplayConn.prototype.process_channel_message = function(msg)
             }
             document.getElementById(this.parent.screen_id).appendChild(v);
             v.setAttribute('style', "pointer-events:none; position: absolute; top:" + top + "px; left:" + left + "px;");
+            if (! (m.flags & Constants.SPICE_STREAM_FLAGS_TOP_DOWN))
+                v.style.transform = "scaleY(-1)";
 
             media.addEventListener('sourceopen', handle_video_source_open, false);
             media.addEventListener('sourceended', handle_video_source_ended, false);
@@ -1127,7 +1129,18 @@ function handle_draw_jpeg_onload()
         var img = this;
         with_clip(context, this.o.base.clip, function()
         {
-            context.drawImage(img, img.o.base.box.left, img.o.base.box.top);
+            if (img.o.bottom_up)
+            {
+                /* The encoder emits a bottom-up frame's rows in memory
+                   order, last row first; flip it back while blitting. */
+                context.save();
+                context.translate(img.o.base.box.left, img.o.base.box.top + img.height);
+                context.scale(1, -1);
+                context.drawImage(img, 0, 0);
+                context.restore();
+            }
+            else
+                context.drawImage(img, img.o.base.box.left, img.o.base.box.top);
         });
 
         if (this.o.descriptor &&
@@ -1194,6 +1207,7 @@ function process_mjpeg_stream_data(sc, m, time_until_due)
           sc : sc,
           id : m.base.id,
           msg_mmtime : m.base.multi_media_time,
+          bottom_up : ! (sc.streams[m.base.id].flags & Constants.SPICE_STREAM_FLAGS_TOP_DOWN),
         };
     img.onload = handle_draw_jpeg_onload;
     img.onerror = handle_draw_jpeg_onerror;
