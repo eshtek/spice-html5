@@ -215,6 +215,18 @@ SpiceRecordConn.prototype.start_capture = function(start)
     });
 }
 
+/* What a generation that lost the race releases: only what it acquired
+   itself. The instance fields may already belong to a newer generation
+   that got past getUserMedia while this one was awaiting, and the
+   STOP that made this one stale has released the old ones already. */
+function release_stale(stream, ctx)
+{
+    if (stream)
+        stream.getTracks().forEach(function(t) { t.stop(); });
+    if (ctx && ctx.state !== 'closed')
+        ctx.close().catch(function() { });
+}
+
 SpiceRecordConn.prototype.do_start_capture = async function(start, generation)
 {
     var stream = await navigator.mediaDevices.getUserMedia({
@@ -264,7 +276,7 @@ SpiceRecordConn.prototype.do_start_capture = async function(start, generation)
         await ctx.resume();
     if (generation != this.generation)
     {
-        this.release_capture_resources();
+        release_stale(stream, ctx);
         return;
     }
 
@@ -285,7 +297,7 @@ SpiceRecordConn.prototype.do_start_capture = async function(start, generation)
         await this.setup_encoder(start, generation);
     if (generation != this.generation)
     {
-        this.release_capture_resources();
+        release_stale(stream, ctx);
         return;
     }
     if (!this.try_opus)
