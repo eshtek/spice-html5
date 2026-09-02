@@ -231,6 +231,9 @@ export var Constants = {
   SPICE_CLIP_TYPE_NONE            : 0,
   SPICE_CLIP_TYPE_RECTS           : 1,
 
+  SPICE_IMAGE_SCALE_MODE_INTERPOLATE : 0,
+  SPICE_IMAGE_SCALE_MODE_NEAREST     : 1,
+
   SPICE_IMAGE_TYPE_BITMAP         : 0,
   SPICE_IMAGE_TYPE_QUIC           : 1,
   SPICE_IMAGE_TYPE_RESERVED       : 2,
