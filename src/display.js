@@ -42,7 +42,8 @@ import { VideoCodecs, video_decoder_codec, video_keyframe } from './videocodecs.
 var scratch_canvas = null;
 var scratch_context = null;
 
-function putImageDataWithAlpha(context, d, x, y)
+/* Draws the src rectangle of d at x,y scaled to dw x dh, blending. */
+function putImageDataWithAlpha(context, d, x, y, src, dw, dh)
 {
     if (scratch_canvas === null)
     {
@@ -54,7 +55,15 @@ function putImageDataWithAlpha(context, d, x, y)
     if (scratch_canvas.height < d.height)
         scratch_canvas.height = d.height;
     scratch_context.putImageData(d, 0, 0);
-    context.drawImage(scratch_canvas, 0, 0, d.width, d.height, x, y, d.width, d.height);
+    context.drawImage(scratch_canvas, src.left, src.top, src.right - src.left, src.bottom - src.top, x, y, dw, dh);
+}
+
+/* The part of an image a draw uses: its src_area, or all of it. */
+function source_rect(o, width, height)
+{
+    if (o.src_area)
+        return o.src_area;
+    return { left: 0, top: 0, right: width, bottom: height };
 }
 
 /* The decoded pixels of an image element, read back through the scratch
@@ -162,17 +171,20 @@ function stripAlpha(d)
    opaque clipped draw is one put per clip rectangle, each limited to the
    rectangle's intersection with the image: no blend, no scratch canvas.
    A clip with no rectangles paints nothing, as with_clip does. */
-function putImageDataClipped(context, d, x, y, clip)
+function putImageDataClipped(context, d, x, y, clip, src)
 {
     var rects = clip.rects.rects || [];
+    var width = src.right - src.left;
+    var height = src.bottom - src.top;
     for (var i = 0; i < rects.length; i++)
     {
         var left = Math.max(rects[i].left, x);
         var top = Math.max(rects[i].top, y);
-        var right = Math.min(rects[i].right, x + d.width);
-        var bottom = Math.min(rects[i].bottom, y + d.height);
+        var right = Math.min(rects[i].right, x + width);
+        var bottom = Math.min(rects[i].bottom, y + height);
         if (right > left && bottom > top)
-            context.putImageData(d, x, y, left - x, top - y, right - left, bottom - top);
+            context.putImageData(d, x - src.left, y - src.top,
+                                 src.left + left - x, src.top + top - y, right - left, bottom - top);
     }
 }
 
@@ -394,8 +406,6 @@ SpiceDisplayConn.prototype.process_channel_message = function(msg)
 
         Utils.DEBUG > 1 && this.log_draw("DrawCopy", draw_copy);
 
-        if (! draw_copy.base.box.is_same_size(draw_copy.data.src_area))
-            this.log_warn("FIXME: DrawCopy src_area is a different size than base.box; we do not handle that yet.");
         if (draw_copy.data.rop_descriptor != Constants.SPICE_ROPD_OP_PUT)
             this.log_warn("FIXME: DrawCopy we don't handle ropd type: " + draw_copy.data.rop_descriptor);
         if (draw_copy.data.mask.flags)
@@ -430,7 +440,8 @@ SpiceDisplayConn.prototype.process_channel_message = function(msg)
                       image_data: source_img,
                       tag: "copyquic." + draw_copy.data.src_bitmap.quic.type,
                       has_alpha: (draw_copy.data.src_bitmap.quic.type == Quic.Constants.QUIC_IMAGE_TYPE_RGBA ? true : false) ,
-                      descriptor : draw_copy.data.src_bitmap.descriptor
+                      descriptor : draw_copy.data.src_bitmap.descriptor,
+                      scale_mode : draw_copy.data.scale_mode
                     });
             }
             else if (draw_copy.data.src_bitmap.descriptor.type == Constants.SPICE_IMAGE_TYPE_FROM_CACHE ||
@@ -454,7 +465,8 @@ SpiceDisplayConn.prototype.process_channel_message = function(msg)
                       },
                       tag: "copycache." + cache_id,
                       has_alpha: true, /* FIXME - may want this to be false... */
-                      descriptor : draw_copy.data.src_bitmap.descriptor
+                      descriptor : draw_copy.data.src_bitmap.descriptor,
+                      scale_mode : draw_copy.data.scale_mode
                     });
 
                 /* FIXME - LOSSLESS CACHE ramifications not understood or handled */
@@ -490,7 +502,8 @@ SpiceDisplayConn.prototype.process_channel_message = function(msg)
                       },
                       tag: "copysurf." + draw_copy.data.src_bitmap.surface_id,
                       has_alpha: source_surface.format != Constants.SPICE_SURFACE_FMT_32_xRGB,
-                      descriptor : draw_copy.data.src_bitmap.descriptor
+                      descriptor : draw_copy.data.src_bitmap.descriptor,
+                      scale_mode : draw_copy.data.scale_mode
                     });
             }
             else if (draw_copy.data.src_bitmap.descriptor.type == Constants.SPICE_IMAGE_TYPE_JPEG)
@@ -509,6 +522,8 @@ SpiceDisplayConn.prototype.process_channel_message = function(msg)
                       sc : this,
                       surface : this.surfaces[draw_copy.base.surface_id],
                       op : this.enqueue_pending(),
+                      src_area : draw_copy.data.src_area,
+                      scale_mode : draw_copy.data.scale_mode,
                     };
                 img.onload = handle_draw_jpeg_onload;
                 img.onerror = handle_draw_jpeg_onerror;
@@ -532,6 +547,8 @@ SpiceDisplayConn.prototype.process_channel_message = function(msg)
                       sc : this,
                       surface : this.surfaces[draw_copy.base.surface_id],
                       op : this.enqueue_pending(),
+                      src_area : draw_copy.data.src_area,
+                      scale_mode : draw_copy.data.scale_mode,
                     };
 
                 if (this.surfaces[draw_copy.base.surface_id].format == Constants.SPICE_SURFACE_FMT_32_ARGB)
@@ -571,7 +588,8 @@ SpiceDisplayConn.prototype.process_channel_message = function(msg)
                       image_data: source_img,
                       tag: "bitmap." + draw_copy.data.src_bitmap.bitmap.format,
                       has_alpha: draw_copy.data.src_bitmap.bitmap.format != Constants.SPICE_BITMAP_FMT_32BIT,
-                      descriptor : draw_copy.data.src_bitmap.descriptor
+                      descriptor : draw_copy.data.src_bitmap.descriptor,
+                      scale_mode : draw_copy.data.scale_mode
                     });
             }
             else if (draw_copy.data.src_bitmap.descriptor.type == Constants.SPICE_IMAGE_TYPE_LZ_RGB)
@@ -598,7 +616,8 @@ SpiceDisplayConn.prototype.process_channel_message = function(msg)
                       image_data: source_img,
                       tag: "lz_rgb." + draw_copy.data.src_bitmap.lz_rgb.type,
                       has_alpha: draw_copy.data.src_bitmap.lz_rgb.type == Constants.LZ_IMAGE_TYPE_RGBA ? true : false ,
-                      descriptor : draw_copy.data.src_bitmap.descriptor
+                      descriptor : draw_copy.data.src_bitmap.descriptor,
+                      scale_mode : draw_copy.data.scale_mode
                     });
             }
             else
@@ -1086,28 +1105,40 @@ SpiceDisplayConn.prototype.draw_copy_now = function(o)
     var canvas = o.surface.canvas;
     var left = o.base.box.left;
     var top = o.base.box.top;
+    var width = o.base.box.right - left;
+    var height = o.base.box.bottom - top;
+    var src = source_rect(o, image_data.width, image_data.height);
+    var scaled = (src.right - src.left) != width || (src.bottom - src.top) != height;
     if (o.opaque && o.has_alpha)
         stripAlpha(image_data);
 
-    if (is_clipped(o.base.clip))
+    /* src_area picks the part of the image that lands in the box, and a
+       box of another size scales it. putImageData can offset but not
+       scale, so a scaled draw goes through drawImage, which needs the
+       alpha bytes made opaque above to copy rather than blend. */
+    if (scaled)
+    {
+        canvas.context.imageSmoothingEnabled = o.scale_mode != Constants.SPICE_IMAGE_SCALE_MODE_NEAREST;
+        with_clip(canvas.context, o.base.clip, function()
+        {
+            putImageDataWithAlpha(canvas.context, image_data, left, top, src, width, height);
+        });
+        canvas.context.imageSmoothingEnabled = true;
+    }
+    else if (is_clipped(o.base.clip))
     {
         if (o.opaque)
-            putImageDataClipped(canvas.context, image_data, left, top, o.base.clip);
+            putImageDataClipped(canvas.context, image_data, left, top, o.base.clip, src);
         else
             with_clip(canvas.context, o.base.clip, function()
             {
-                putImageDataWithAlpha(canvas.context, image_data, left, top);
+                putImageDataWithAlpha(canvas.context, image_data, left, top, src, width, height);
             });
     }
     else if (o.opaque)
-        canvas.context.putImageData(image_data, left, top);
+        canvas.context.putImageData(image_data, left - src.left, top - src.top, src.left, src.top, width, height);
     else
-        putImageDataWithAlpha(canvas.context, image_data, left, top);
-
-    if (o.src_area.left > 0 || o.src_area.top > 0)
-    {
-        this.log_warn("FIXME: DrawCopy not shifting draw copies just yet...");
-    }
+        putImageDataWithAlpha(canvas.context, image_data, left, top, src, width, height);
 
     if (Utils.DUMP_DRAWS && this.parent.dump_id)
     {
@@ -1357,6 +1388,14 @@ function draw_jpeg_now(img)
         return;
     }
     var context = o.surface.canvas.context;
+    var left = o.base.box.left;
+    var top = o.base.box.top;
+    var width = o.base.box.right - left;
+    var height = o.base.box.bottom - top;
+    var src = source_rect(o, img.width, img.height);
+    var sw = src.right - src.left;
+    var sh = src.bottom - src.top;
+    context.imageSmoothingEnabled = o.scale_mode != Constants.SPICE_IMAGE_SCALE_MODE_NEAREST;
 
     if (img.alpha_img)
     {
@@ -1370,7 +1409,7 @@ function draw_jpeg_now(img)
 
         with_clip(context, o.base.clip, function()
         {
-            context.drawImage(c, o.base.box.left, o.base.box.top);
+            context.drawImage(c, src.left, src.top, sw, sh, left, top, width, height);
         });
 
         if (o.descriptor &&
@@ -1394,13 +1433,13 @@ function draw_jpeg_now(img)
                 /* The encoder emits a bottom-up frame's rows in memory
                    order, last row first; flip it back while blitting. */
                 context.save();
-                context.translate(o.base.box.left, o.base.box.top + img.height);
+                context.translate(left, top + height);
                 context.scale(1, -1);
-                context.drawImage(img, 0, 0);
+                context.drawImage(img, src.left, src.top, sw, sh, 0, 0, width, height);
                 context.restore();
             }
             else
-                context.drawImage(img, o.base.box.left, o.base.box.top);
+                context.drawImage(img, src.left, src.top, sw, sh, left, top, width, height);
         });
 
         if (o.descriptor &&
@@ -1409,13 +1448,13 @@ function draw_jpeg_now(img)
             if (! ("cache" in sc))
                 sc.cache = {};
 
-            var width = o.base.box.right - o.base.box.left;
-            var height = o.base.box.bottom - o.base.box.top;
-            /* The cache wants the whole image; a clipped draw left only
-               part of it on the surface. */
-            sc.cache[o.descriptor.id] = is_clipped(o.base.clip) ?
-                image_to_image_data(img, width, height) :
-                context.getImageData(o.base.box.left, o.base.box.top, width, height);
+            /* The cache wants the whole image; a clipped, offset or scaled
+               draw left only part of it, or a resampling, on the surface. */
+            var whole = src.left == 0 && src.top == 0 && sw == img.width && sh == img.height &&
+                        width == img.width && height == img.height;
+            sc.cache[o.descriptor.id] = (is_clipped(o.base.clip) || ! whole) ?
+                image_to_image_data(img, img.width, img.height) :
+                context.getImageData(left, top, width, height);
         }
 
         // Give the Garbage collector a clue to recycle this; avoids
@@ -1423,6 +1462,8 @@ function draw_jpeg_now(img)
         img.onload = undefined;
         img.src = Utils.EMPTY_GIF_IMAGE;
     }
+
+    context.imageSmoothingEnabled = true;
 
     if (Utils.DUMP_DRAWS && sc.parent.dump_id)
     {
