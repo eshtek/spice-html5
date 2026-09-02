@@ -157,6 +157,24 @@ function stripAlpha(d)
         words[i] |= 0xff000000;
 }
 
+/* putImageData ignores the clip region but takes a dirty rectangle, so an
+   opaque clipped draw is one put per clip rectangle, each limited to the
+   rectangle's intersection with the image: no blend, no scratch canvas.
+   A clip with no rectangles paints nothing, as with_clip does. */
+function putImageDataClipped(context, d, x, y, clip)
+{
+    var rects = clip.rects.rects || [];
+    for (var i = 0; i < rects.length; i++)
+    {
+        var left = Math.max(rects[i].left, x);
+        var top = Math.max(rects[i].top, y);
+        var right = Math.min(rects[i].right, x + d.width);
+        var bottom = Math.min(rects[i].bottom, y + d.height);
+        if (right > left && bottom > top)
+            context.putImageData(d, x, y, left - x, top - y, right - left, bottom - top);
+    }
+}
+
 /* JPEG frames used to be turned into percent-encoded data: URIs one byte at
    a time — an O(n) string build per frame that dominated MJPEG playback.
    A Blob URL hands the bytes to the decoder directly; it must be revoked
@@ -849,15 +867,13 @@ SpiceDisplayConn.prototype.draw_copy_helper = function(o)
 
     if (is_clipped(o.base.clip))
     {
-        /* putImageData ignores the clip region, so a clipped draw goes
-           through drawImage, which blends: opaque pixels must carry a
-           full alpha byte first or they would show the surface through. */
-        if (opaque && ! o.has_alpha)
-            stripAlpha(o.image_data);
-        with_clip(canvas.context, o.base.clip, function()
-        {
-            putImageDataWithAlpha(canvas.context, o.image_data, left, top);
-        });
+        if (opaque)
+            putImageDataClipped(canvas.context, o.image_data, left, top, o.base.clip);
+        else
+            with_clip(canvas.context, o.base.clip, function()
+            {
+                putImageDataWithAlpha(canvas.context, o.image_data, left, top);
+            });
     }
     else if (opaque)
         canvas.context.putImageData(o.image_data, left, top);
