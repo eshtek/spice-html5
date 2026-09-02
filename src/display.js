@@ -151,10 +151,10 @@ function with_clip(context, clip, draw)
 function stripAlpha(d)
 {
     var i;
-    var data = d.data;
-    var n = d.width * d.height * 4;
-    for (i = 3; i < n; i += 4)
-        data[i] = 255;
+    var words = new Uint32Array(d.data.buffer);
+    var n = words.length;
+    for (i = 0; i < n; i++)
+        words[i] |= 0xff000000;
 }
 
 /* JPEG frames used to be turned into percent-encoded data: URIs one byte at
