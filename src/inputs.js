@@ -216,6 +216,9 @@ function sendCtrlAltDel(sc)
         key.code = KeyNames.KEY_KP_Decimal;
         msg.build_msg(Constants.SPICE_MSGC_INPUTS_KEY_DOWN, key);
         sc.inputs.send_msg(msg);
+        /* The server forwards scancode bytes verbatim, so the release must
+           carry the break bit itself, as keycode_to_end_scan does. */
+        key.code = 0x80 | KeyNames.KEY_KP_Decimal;
         msg.build_msg(Constants.SPICE_MSGC_INPUTS_KEY_UP, key);
         sc.inputs.send_msg(msg);
 
