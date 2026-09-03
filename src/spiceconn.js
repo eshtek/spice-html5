@@ -392,17 +392,30 @@ SpiceConn.prototype =
         var rc;
         var start = Date.now();
         DEBUG > 0 && console.log("<< hdr " + this.channel_type() + " type " + msg.type + " size " + (msg.data && msg.data.byteLength));
-        rc = this.process_common_messages(msg);
-        if (! rc)
+        /* A handler that throws must not take the channel with it: the
+           caller re-arms the wire reader only after this returns, so an
+           escaped exception left every later byte read as a header and
+           the channel decoding garbage until it closed. Report it and
+           carry on with the next message. */
+        try
         {
-            if (this.process_channel_message)
+            rc = this.process_common_messages(msg);
+            if (! rc)
             {
-                rc = this.process_channel_message(msg);
-                if (! rc)
-                    this.log_warn(this.channel_type() + ": Unknown message type " + msg.type + "!");
+                if (this.process_channel_message)
+                {
+                    rc = this.process_channel_message(msg);
+                    if (! rc)
+                        this.log_warn(this.channel_type() + ": Unknown message type " + msg.type + "!");
+                }
+                else
+                    this.log_err(this.channel_type() + ": No message handlers for this channel; message " + msg.type);
             }
-            else
-                this.log_err(this.channel_type() + ": No message handlers for this channel; message " + msg.type);
+        }
+        catch (e)
+        {
+            this.log_err(this.channel_type() + ": exception handling message type " + msg.type + ": " + e.message);
+            DEBUG > 0 && console.error(e);
         }
 
         if (this.msgs_until_ack !== undefined && this.ack_window)
