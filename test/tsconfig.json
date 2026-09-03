@@ -1,0 +1,26 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "strict": true,
+    "allowJs": true,
+    "checkJs": false,
+    "noEmit": true,
+    "skipLibCheck": true,
+    "types": [
+      "bun-types"
+    ],
+    "lib": [
+      "ES2022",
+      "DOM"
+    ],
+    "allowImportingTsExtensions": true
+  },
+  "include": [
+    "server",
+    "unit",
+    "e2e",
+    "../src/enums.js"
+  ]
+}

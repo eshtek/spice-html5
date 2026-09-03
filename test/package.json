@@ -1,0 +1,23 @@
+{
+  "name": "spice-html5-test",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "unit": "bun test unit",
+    "e2e": "playwright test -c e2e/playwright.config.ts --project=chromium --project=firefox",
+    "e2e:chromium": "playwright test -c e2e/playwright.config.ts --project=chromium",
+    "perf": "playwright test -c e2e/playwright.config.ts --project=perf",
+    "serve": "bun server/cli.ts --scenario desktop --port 5959",
+    "record": "bun server/record.ts",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "jpeg-js": "0.4.4"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.58.2",
+    "@types/bun": "1.3.14",
+    "@types/jpeg-js": "0.3.7",
+    "typescript": "5.9.3"
+  }
+}

@@ -1,0 +1,116 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>spice-html5 harness</title>
+<link rel="stylesheet" href="/spice.css">
+<link rel="icon" href="/favicon.svg">
+<style>
+  body { margin: 0; background: #888; }
+  /* Centred, sized by its canvas; the client positions overlays from the
+     canvas's offset inside this div, which the centring does not change. */
+  #spice-screen { position: relative; width: fit-content; margin: 0 auto; }
+  #message-div { height: 60px; overflow: auto; font: 11px monospace; }
+</style>
+</head>
+<body>
+<div id="spice-area">
+  <div id="spice-screen"></div>
+  <div id="message-div" class="spice-message"></div>
+</div>
+<script type="module">
+import * as Spice from '/src/main.js';
+import { Constants } from '/src/enums.js';
+
+const h = {
+  Spice,
+  /* The live enum table the client reads; specs may shorten timeouts. */
+  Constants,
+  sc: null,
+  errors: [],
+  successes: [],
+  agentCalls: 0,
+  connect(opts) {
+    const uri = opts.uri || ('ws://' + location.host + '/spice');
+    return new Promise((resolve, reject) => {
+      let settled = false;
+      try {
+        h.sc = new Spice.SpiceMainConn({
+          uri,
+          password: opts.password || '',
+          screen_id: 'spice-screen',
+          message_id: 'message-div',
+          onerror(e) {
+            const msg = e && e.message ? e.message : e && e.type ? 'websocket ' + e.type : String(e);
+            h.errors.push(msg);
+            if (!settled) { settled = true; reject(new Error(msg)); }
+          },
+          onsuccess(m) {
+            h.successes.push(m);
+            if (!settled) { settled = true; resolve(m); }
+          },
+          onagent() { h.agentCalls++; },
+        });
+        window.spice_connection = h.sc;
+      } catch (e) {
+        h.errors.push(e.message);
+        if (!settled) { settled = true; reject(e); }
+      }
+    });
+  },
+  disconnect() {
+    if (h.sc) { h.sc.stop(); h.sc = null; window.spice_connection = undefined; }
+  },
+  channelStates() {
+    const sc = h.sc;
+    if (!sc) return null;
+    return {
+      main: sc.state,
+      display: sc.display && sc.display.state,
+      inputs: sc.inputs && sc.inputs.state,
+      cursor: sc.cursor && sc.cursor.state,
+      playback: sc.playback && sc.playback.state,
+      record: sc.record && sc.record.state,
+    };
+  },
+  pixel(x, y, surface = 0) {
+    const c = document.getElementById('spice_surface_' + surface);
+    if (!c) return null;
+    return Array.from(c.getContext('2d').getImageData(x, y, 1, 1).data).slice(0, 3);
+  },
+  sendCtrlAltDel() { Spice.sendCtrlAltDel(h.sc); },
+  typeText(text, delay) { return Spice.typeText(h.sc, text, delay); },
+  messages() {
+    return Array.from(document.querySelectorAll('#message-div > *')).map((n) => n.textContent);
+  },
+};
+window.harness = h;
+
+/* Served at "/" (bun run serve) the page connects on its own so the fake
+   server can be eyeballed; the specs load /page.html and drive connect(). */
+const params = new URLSearchParams(location.search);
+const auto = location.pathname === '/' || params.has('connect');
+if (auto) {
+  /* Per-socket timing in the console, so a slow or failing connect can be
+     told apart from a slow handshake: ?ws=ws://host:port overrides the target. */
+  const Native = window.WebSocket;
+  window.WebSocket = function (url, proto) {
+    const t0 = performance.now();
+    const ws = new Native(url, proto);
+    const ms = () => Math.round(performance.now() - t0) + 'ms';
+    ws.addEventListener('open', () => console.log('ws open', url, ms()));
+    ws.addEventListener('error', () => console.warn('ws error', url, ms()));
+    ws.addEventListener('close', (e) => console.log('ws close', url, ms(), 'code', e.code, e.wasClean ? 'clean' : 'unclean'));
+    return ws;
+  };
+  window.WebSocket.prototype = Native.prototype;
+  const password = params.get('password') || '';
+  const uri = params.get('ws') || undefined;
+  h.connect({ password, uri }).then(
+    (m) => console.log('harness: connected', m),
+    (e) => console.error('harness: connect failed', e.message),
+  );
+}
+</script>
+</body>
+</html>
