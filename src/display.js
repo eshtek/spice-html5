@@ -511,19 +511,38 @@ COMPOSITE_OPS[Constants.SPICE_COMPOSITE_OP_XOR] = "xor";
 COMPOSITE_OPS[Constants.SPICE_COMPOSITE_OP_ADD] = "lighter";
 COMPOSITE_OPS[Constants.SPICE_COMPOSITE_OP_SATURATE] = "lighter";
 
-/* A composite operand rendered onto a fresh canvas the size of the
-   destination box.  Render samples the operand at transform * (dest +
-   origin); the canvas maps operand to destination, so it gets the
-   inverse.  Repeat 1 tiles; filter 0 is nearest. */
-function composite_layer(image_data, origin, transform, repeat, filter, w, h)
+/* Canvases a Composite draws its operands through, kept between draws:
+   a desktop with Render issues one Composite per glyph run, and three
+   fresh canvases per op is most of its cost. The two layers only grow
+   and are cleared where used; the operand is sized to its image, since
+   createPattern tiles the whole canvas. */
+var composite_canvases = [];
+
+function composite_canvas(index, w, h, exact)
 {
-    var layer = document.createElement("canvas");
-    layer.width = w;
-    layer.height = h;
+    var c = composite_canvases[index];
+    if (! c)
+        c = composite_canvases[index] = document.createElement("canvas");
+    if (exact ? (c.width != w || c.height != h) : (c.width < w || c.height < h))
+    {
+        c.width = exact ? w : Math.max(c.width, w);
+        c.height = exact ? h : Math.max(c.height, h);
+    }
+    return c;
+}
+
+/* A composite operand rendered onto a layer canvas, of which the top
+   left w x h is the destination box.  Render samples the operand at
+   transform * (dest + origin); the canvas maps operand to destination,
+   so it gets the inverse.  Repeat 1 tiles; filter 0 is nearest. */
+function composite_layer(index, image_data, origin, transform, repeat, filter, w, h)
+{
+    var layer = composite_canvas(index, w, h, false);
     var ctx = layer.getContext("2d");
-    var operand = document.createElement("canvas");
-    operand.width = image_data.width;
-    operand.height = image_data.height;
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.globalCompositeOperation = "source-over";
+    ctx.clearRect(0, 0, w, h);
+    var operand = composite_canvas(2, image_data.width, image_data.height, true);
     operand.getContext("2d").putImageData(image_data, 0, 0);
     ctx.imageSmoothingEnabled = filter != 0;
     var t = transform || [1, 0, 0, 0, 1, 0];
@@ -531,6 +550,10 @@ function composite_layer(image_data, origin, transform, repeat, filter, w, h)
     var det = t[0] * t[4] - t[1] * t[3];
     if (! det)
         return layer;
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(0, 0, w, h);
+    ctx.clip();
     var ia = t[4] / det, ib = -t[3] / det, ic = -t[1] / det, id = t[0] / det;
     var ie = -(ia * t[2] + ic * t[5]) - origin.x;
     var iff = -(ib * t[2] + id * t[5]) - origin.y;
@@ -543,6 +566,7 @@ function composite_layer(image_data, origin, transform, repeat, filter, w, h)
     }
     else
         ctx.drawImage(operand, 0, 0);
+    ctx.restore();
     return layer;
 }
 
