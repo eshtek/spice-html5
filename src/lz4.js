@@ -112,8 +112,10 @@ function bytes_per_pixel(format)
 
 /* The image as a SpiceBitmap-shaped object (format, flags, x, y, stride,
    data), or undefined when the data is malformed or the format is not
-   one the server's encoder produces.  The encoder only takes bitmaps
-   without stride padding, so the rows are packed. */
+   one the server's encoder produces.  The server compresses the guest
+   bitmap's own stride per row, which is the packed width for 32-bit
+   pixels but may be padded to four bytes for 16 and 24; the decoded
+   size says which. */
 function decode_spice_lz4(descriptor, lz4)
 {
     var u8 = new Uint8Array(lz4.data);
@@ -127,8 +129,9 @@ function decode_spice_lz4(descriptor, lz4)
 
     var w = descriptor.width;
     var h = descriptor.height;
-    var stride = w * bpp;
-    var out = new Uint8Array(h * stride);
+    var packed = w * bpp;
+    var aligned = (packed + 3) & ~3;
+    var out = new Uint8Array(h * aligned);
     var sp = 2;
     var dp = 0;
     while (sp < u8.length)
@@ -144,7 +147,12 @@ function decode_spice_lz4(descriptor, lz4)
             return undefined;
         sp += n;
     }
-    if (dp != out.length)
+    var stride;
+    if (dp == h * packed)
+        stride = packed;
+    else if (dp == h * aligned)
+        stride = aligned;
+    else
         return undefined;
 
     return { format: format,
