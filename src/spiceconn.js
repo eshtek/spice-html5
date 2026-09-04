@@ -93,6 +93,8 @@ function SpiceConn(o)
         this.disable_effects = o.disable_effects;
     if (o.color_depth !== undefined)
         this.color_depth = o.color_depth;
+    if (o.coalesce_motion !== undefined)
+        this.coalesce_motion = o.coalesce_motion;
 
     this.state = "connecting";
     this.ws.parent = this;

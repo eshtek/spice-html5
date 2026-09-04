@@ -175,3 +175,68 @@ test("a held button is carried in the motion that follows", async ({ client, spi
   await client.page.mouse.move(bb.x + 70, bb.y + 70);
   await expect.poll(async () => (await spice.inbound("inputs", "mouse_position", after)).map((m) => m.fields.buttonsState)).toEqual([0]);
 });
+
+/* The canvas sits at a fractional page offset, so a position may land a pixel short. */
+const near = (want: [number, number]) => (got: Array<[unknown, unknown]>) =>
+  got.length === 1 && Math.abs((got[0][0] as number) - want[0]) <= 1 && Math.abs((got[0][1] as number) - want[1]) <= 1;
+const lastPos = async (spice: { inbound: (c: string, n: string, s: number) => Promise<Array<{ fields: Record<string, unknown> }>> }, since: number) =>
+  (await spice.inbound("inputs", "mouse_position", since)).slice(-1).map((m) => [m.fields.x, m.fields.y] as [unknown, unknown]);
+
+test.describe("motion coalescing", () => {
+  test("a burst sends at most one position per frame and ends on the final position", async ({ client, spice }) => {
+    await client.disconnect();
+    await spice.reset({ motionAck: true });
+    await client.connectReady();
+    await spice.send("display", "surfaceCreate", { width: 320, height: 240 });
+    const bb = (await client.surface().boundingBox())!;
+    await client.page.mouse.move(bb.x + 10, bb.y + 10);
+    const before = await spice.mark();
+    /* 200 events over 50 frames: at most a leading and a trailing send per frame. */
+    await client.mouseStorm({ frames: 50, perFrame: 4, from: [10, 10], to: [210, 110] });
+    await expect.poll(async () => near([210, 110])(await lastPos(spice, before))).toBe(true);
+    await client.page.waitForTimeout(100);
+    const sent = (await spice.inbound("inputs", "mouse_position", before)).length;
+    expect(sent).toBeLessThanOrEqual(102);
+    expect(sent).toBeGreaterThan(1);
+  });
+
+  test("the newest position waits for an ack instead of being dropped", async ({ client, spice }) => {
+    const bb = (await client.surface().boundingBox())!;
+    await client.page.mouse.move(bb.x + 10, bb.y + 10);
+    const before = await spice.mark();
+    /* No acks: the window of 8 fills within the burst. */
+    await client.page.mouse.move(bb.x + 200, bb.y + 200, { steps: 40 });
+    await client.page.waitForTimeout(150);
+    const stalled = await spice.inbound("inputs", "mouse_position", before);
+    expect(stalled.length).toBeLessThanOrEqual(8);
+    expect(near([200, 200])(stalled.slice(-1).map((m) => [m.fields.x, m.fields.y] as [unknown, unknown]))).toBe(false);
+    await spice.send("inputs", "mouseMotionAck");
+    await expect.poll(async () => near([200, 200])(await lastPos(spice, before))).toBe(true);
+    expect((await spice.inbound("inputs", "mouse_position", before)).length).toBe(stalled.length + 1);
+  });
+
+  test("coalesce_motion: false sends every event and drops the excess", async ({ client, spice }) => {
+    await client.disconnect();
+    await client.connectReady({ coalesce_motion: false });
+    await spice.send("display", "surfaceCreate", { width: 320, height: 240 });
+    const bb = (await client.surface().boundingBox())!;
+    await client.page.mouse.move(bb.x + 10, bb.y + 10);
+    const before = await spice.mark();
+    await client.page.mouse.move(bb.x + 200, bb.y + 200, { steps: 40 });
+    await client.page.waitForTimeout(150);
+    const sent = await spice.inbound("inputs", "mouse_position", before);
+    expect(sent.length).toBe(7);
+    await spice.send("inputs", "mouseMotionAck");
+    await client.page.waitForTimeout(150);
+    expect((await spice.inbound("inputs", "mouse_position", before)).length).toBe(7);
+  });
+
+  test("stopping the session cancels a pending flush", async ({ client, spice }) => {
+    const bb = (await client.surface().boundingBox())!;
+    await client.page.mouse.move(bb.x + 10, bb.y + 10);
+    await client.page.mouse.move(bb.x + 200, bb.y + 200, { steps: 40 });
+    await client.disconnect();
+    await client.page.waitForTimeout(150);
+    expect(await client.errors()).toEqual([]);
+  });
+});

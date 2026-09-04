@@ -383,6 +383,49 @@ test("mjpeg 160x120 @30fps for 3s over 2 Mbit/s at 50 ms", async ({ client, spic
   record("mjpeg-160x120-30fps-3s-shaped-2mbps-50ms", sample);
 });
 
+/* A mouse storm: 500 motion events over 100 frames, five per frame as a
+   1 kHz mouse delivers, with the server acking as a real one does. Coalesced, at most one goes per frame; raw,
+   every event that fits the ack window goes. Sends are the count the
+   server saw; taskMs is what the page paid. */
+async function mouseStorm(client: SpiceClient, spice: SpiceControl, coalesce: boolean) {
+  await client.disconnect();
+  await spice.reset({ motionAck: true });
+  await client.connectReady({ coalesce_motion: coalesce });
+  await spice.send("display", "surfaceCreate", { width: 640, height: 480 });
+  const bb = (await client.surface().boundingBox())!;
+  await client.page.mouse.move(bb.x + 10, bb.y + 10);
+  const cdp = await client.page.context().newCDPSession(client.page);
+  await cdp.send("Performance.enable");
+  const before = await spice.mark();
+  const sample = await measure(
+    client.page,
+    cdp,
+    async () => {
+      await client.mouseStorm({ frames: 100, perFrame: 5, from: [10, 10], to: [610, 460] });
+      /* The canvas sits at a fractional page offset: a pixel short still counts. */
+      await expect
+        .poll(async () => (await spice.inbound("inputs", "mouse_position", before)).slice(-1).map((m) => Math.abs((m.fields.x as number) - 610) <= 1 && Math.abs((m.fields.y as number) - 460) <= 1), { timeout: 5000 })
+        .toEqual([true]);
+    },
+    () => client.counters(),
+  );
+  const sends = (await spice.inbound("inputs", "mouse_position", before)).length;
+  console.log(`perf mouse-storm-500-${coalesce ? "coalesced" : "raw"}: sends=${sends} wallMs=${sample.wallMs}`);
+  return { sample, sends };
+}
+
+test("500 mouse motions, coalesced", async ({ client, spice }) => {
+  const { sample, sends } = await mouseStorm(client, spice, true);
+  expect(sends).toBeGreaterThan(1);
+  expect(sends).toBeLessThanOrEqual(202);
+  record("mouse-storm-500-coalesced", sample);
+});
+
+test("500 mouse motions, one send per event", async ({ client, spice }) => {
+  const { sample } = await mouseStorm(client, spice, false);
+  record("mouse-storm-500-raw", sample);
+});
+
 test("20 connect/disconnect cycles hold the heap flat", async ({ client, spice }) => {
   const cdp = await client.page.context().newCDPSession(client.page);
   await cdp.send("Performance.enable");

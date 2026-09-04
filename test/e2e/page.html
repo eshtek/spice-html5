@@ -55,6 +55,7 @@ const h = {
           onvolume(v) { h.volumes.push(v); },
           disable_effects: opts.disable_effects,
           color_depth: opts.color_depth,
+          coalesce_motion: opts.coalesce_motion,
         });
         window.spice_connection = h.sc;
       } catch (e) {

@@ -76,6 +76,10 @@ import { resize_helper, handle_resize } from './resize.js';
 **                                  pixels change, so less to send.
 **          color_depth (optional)  Colour depth to ask the guest desktop
 **                                  for through the agent, e.g. 16.
+**          coalesce_motion (optional)  Default true: mouse motion is sent
+**                                  at most once per animation frame and the
+**                                  newest position is never dropped.  false
+**                                  sends every event and drops the excess.
 **
 **  Throws error if there are troubles.  Requires a modern (by 2012 standards)
 **      browser, including WebSocket and WebSocket.binaryType == arraybuffer

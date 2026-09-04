@@ -40,6 +40,9 @@ export interface ServerConfig {
   /* Advertise taking a preferred-compression request (and LZ4 images),
      the way a real spice-server built with lz4 does. */
   prefCompressionCap: boolean;
+  /* Acknowledge every SPICE_INPUT_MOTION_ACK_BUNCH motion messages, as a
+     real server does; off, a spec sends the acks itself. */
+  motionAck: boolean;
   scenario: string | null;
   replay: string | null;
   replaySpeed: number;
@@ -66,6 +69,7 @@ export const DEFAULT_CONFIG: ServerConfig = {
   ackWindow: 0,
   autoInit: true,
   prefCompressionCap: true,
+  motionAck: false,
   scenario: null,
   replay: null,
   replaySpeed: 1,
@@ -94,6 +98,7 @@ interface Conn {
   coalesceTimer: ReturnType<typeof setTimeout> | null;
   shaper: Shaper | null;
   need: number;
+  motions: number;
 }
 
 export interface InboundRecord extends M.ClientMessage {
@@ -421,6 +426,7 @@ export class FakeSpiceServer {
       coalesceTimer: null,
       shaper: null,
       need: 0,
+      motions: 0,
     };
     if (this.config.shape) conn.shaper = new Shaper(this.config.shape, (b) => this.deliver(conn, b));
     this.conns.set(conn.id, conn);
@@ -628,6 +634,9 @@ export class FakeSpiceServer {
     if (this.recording) return;
     if (conn.channelType === C.SPICE_CHANNEL_MAIN && decoded.name === "attach_channels") {
       this.send(conn, M.channelsList(this.config.channels));
+    } else if (conn.channelType === C.SPICE_CHANNEL_INPUTS && (decoded.name === "mouse_motion" || decoded.name === "mouse_position")) {
+      conn.motions++;
+      if (this.config.motionAck && conn.motions % C.SPICE_INPUT_MOTION_ACK_BUNCH === 0) this.send(conn, M.mouseMotionAck());
     } else if (conn.channelType === C.SPICE_CHANNEL_DISPLAY && decoded.name === "display_init") {
       if (this.config.scenario) void this.runScenario(this.config.scenario);
     }

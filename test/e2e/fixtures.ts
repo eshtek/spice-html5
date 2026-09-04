@@ -294,6 +294,34 @@ export class SpiceClient {
     expect(off, `pixel (${x},${y}) is ${p!.join(",")}, wanted ${rgb.join(",")}`).toBeLessThanOrEqual(tolerance);
   }
 
+  /* A high-rate mouse: perFrame mousemove events on the canvas in each of
+     `frames` animation frames, sweeping from one canvas point to another.
+     page.mouse.move awaits every step, so it cannot exceed one event per
+     task; a 1 kHz mouse delivers several per frame. */
+  mouseStorm(a: { frames: number; perFrame: number; from: [number, number]; to: [number, number] }) {
+    return this.page.evaluate(
+      (a) =>
+        new Promise<number>((resolve) => {
+          const c = document.querySelector("#spice-screen canvas") as HTMLCanvasElement;
+          const r = c.getBoundingClientRect();
+          const total = a.frames * a.perFrame;
+          let i = 0;
+          const frame = () => {
+            for (let k = 0; k < a.perFrame && i < total; k++, i++) {
+              const t = i / (total - 1);
+              const x = a.from[0] + (a.to[0] - a.from[0]) * t;
+              const y = a.from[1] + (a.to[1] - a.from[1]) * t;
+              c.dispatchEvent(new MouseEvent("mousemove", { clientX: r.left + x, clientY: r.top + y, bubbles: true, cancelable: true }));
+            }
+            if (i < total) requestAnimationFrame(frame);
+            else resolve(total);
+          };
+          requestAnimationFrame(frame);
+        }),
+      a,
+    );
+  }
+
   /* Resets the first-paint stamp and starts sampling the draw queue. */
   startMeasure() {
     return this.page.evaluate(() => {

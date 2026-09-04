@@ -60,6 +60,12 @@ function SpiceInputsConn()
 }
 
 SpiceInputsConn.prototype = Object.create(SpiceConn.prototype);
+SpiceInputsConn.prototype.cleanup = function()
+{
+    cancel_motion_flush(this);
+    this.pending_motion = undefined;
+    SpiceConn.prototype.cleanup.call(this);
+}
 SpiceInputsConn.prototype.process_channel_message = function(msg)
 {
     if (msg.type == Constants.SPICE_MSG_INPUTS_INIT)
@@ -82,6 +88,8 @@ SpiceInputsConn.prototype.process_channel_message = function(msg)
     {
         DEBUG > 1 && console.log("mouse motion ack");
         this.waiting_for_ack -= Constants.SPICE_INPUT_MOTION_ACK_BUNCH;
+        if (this.pending_motion && this.parent)
+            flush_motion(this.parent);
         return true;
     }
     return false;
@@ -89,51 +97,116 @@ SpiceInputsConn.prototype.process_channel_message = function(msg)
 
 
 
+/* Motion is sent at most once per animation frame: the first event of a
+   burst goes at once, later events in the same frame replace each other,
+   and the frame sends the newest. While the server is behind on acks
+   the newest position waits for the next ack instead of being dropped,
+   so the pointer always ends where the mouse did; before, a burst that
+   filled the window lost its last positions until the mouse moved
+   again. coalesce_motion: false on the connection keeps the old
+   one-send-per-event behaviour. */
+var MOTION_FALLBACK_MS = 50;
+
 function handle_mousemove(e)
 {
-    /* Only build the message once we know it will be sent; mousemove can
-       fire hundreds of times a second and the discarded-motion path was
-       paying for two allocations and a serialize per event. */
-    if (this.sc && this.sc.inputs && this.sc.inputs.state === "ready")
+    var sc = this.sc;
+    if (sc && sc.inputs && sc.inputs.state === "ready")
     {
-        if (this.sc.inputs.waiting_for_ack < (2 * Constants.SPICE_INPUT_MOTION_ACK_BUNCH))
+        var inputs = sc.inputs;
+        if (sc.coalesce_motion === false)
         {
-            var msg = new Messages.SpiceMiniData();
-            var inputs = this.sc.inputs;
-            var move;
-            if (this.sc.mouse_mode == Constants.SPICE_MOUSE_MODE_CLIENT)
-            {
-                move = new Messages.SpiceMsgcMousePosition(e.offsetX, e.offsetY, inputs.buttons_state);
-                msg.build_msg(Constants.SPICE_MSGC_INPUTS_MOUSE_POSITION, move);
-            }
-            else
-            {
-                /* Relative to where the pointer last was, which the
-                   cursor channel moves when the server warps it. */
-                var dx = inputs.mousex !== undefined ? e.offsetX - inputs.mousex : 0;
-                var dy = inputs.mousey !== undefined ? e.offsetY - inputs.mousey : 0;
-                move = new Messages.SpiceMsgcMouseMotion(dx, dy, inputs.buttons_state);
-                msg.build_msg(Constants.SPICE_MSGC_INPUTS_MOUSE_MOTION, move);
-            }
-            inputs.mousex = e.offsetX;
-            inputs.mousey = e.offsetY;
-            this.sc.inputs.send_msg(msg);
-            this.sc.inputs.waiting_for_ack++;
+            if (! send_motion(sc, e.offsetX, e.offsetY))
+                DEBUG > 0 && sc.log_info("Discarding mouse motion");
         }
         else
         {
-            DEBUG > 0 && this.sc.log_info("Discarding mouse motion");
+            inputs.pending_motion = { x: e.offsetX, y: e.offsetY };
+            if (inputs.motion_frame === undefined)
+            {
+                /* Leading edge: nothing in this frame yet, so send now and
+                   let the frame pick up whatever follows. */
+                if (send_motion(sc, e.offsetX, e.offsetY))
+                    inputs.pending_motion = undefined;
+                schedule_motion_flush(sc);
+            }
         }
     }
 
-    if (this.sc && this.sc.cursor && this.sc.cursor.spice_simulated_cursor)
+    if (sc && sc.cursor && sc.cursor.spice_simulated_cursor)
     {
-        this.sc.cursor.spice_simulated_cursor.style.display = 'block';
-        this.sc.cursor.spice_simulated_cursor.style.left = e.pageX - this.sc.cursor.spice_simulated_cursor.spice_hot_x + 'px';
-        this.sc.cursor.spice_simulated_cursor.style.top = e.pageY - this.sc.cursor.spice_simulated_cursor.spice_hot_y + 'px';
+        sc.cursor.spice_simulated_cursor.style.display = 'block';
+        sc.cursor.spice_simulated_cursor.style.left = e.pageX - sc.cursor.spice_simulated_cursor.spice_hot_x + 'px';
+        sc.cursor.spice_simulated_cursor.style.top = e.pageY - sc.cursor.spice_simulated_cursor.spice_hot_y + 'px';
         e.preventDefault();
     }
 
+}
+
+/* One position or motion message, if the ack window allows it. Only
+   build the message once it is known to go: mousemove can fire hundreds
+   of times a second. */
+function send_motion(sc, x, y)
+{
+    var inputs = sc.inputs;
+    if (inputs.waiting_for_ack >= (2 * Constants.SPICE_INPUT_MOTION_ACK_BUNCH))
+        return false;
+    var msg = new Messages.SpiceMiniData();
+    var move;
+    if (sc.mouse_mode == Constants.SPICE_MOUSE_MODE_CLIENT)
+    {
+        move = new Messages.SpiceMsgcMousePosition(x, y, inputs.buttons_state);
+        msg.build_msg(Constants.SPICE_MSGC_INPUTS_MOUSE_POSITION, move);
+    }
+    else
+    {
+        /* Relative to where the pointer last was, which the cursor
+           channel moves when the server warps it. */
+        var dx = inputs.mousex !== undefined ? x - inputs.mousex : 0;
+        var dy = inputs.mousey !== undefined ? y - inputs.mousey : 0;
+        move = new Messages.SpiceMsgcMouseMotion(dx, dy, inputs.buttons_state);
+        msg.build_msg(Constants.SPICE_MSGC_INPUTS_MOUSE_MOTION, move);
+    }
+    inputs.mousex = x;
+    inputs.mousey = y;
+    inputs.send_msg(msg);
+    inputs.waiting_for_ack++;
+    return true;
+}
+
+/* A timer stands in for the frame in a hidden tab. */
+function schedule_motion_flush(sc)
+{
+    var inputs = sc.inputs;
+    if (inputs.motion_frame !== undefined)
+        return;
+    inputs.motion_frame = window.requestAnimationFrame(function() { flush_motion(sc); });
+    inputs.motion_timer = window.setTimeout(function() { flush_motion(sc); }, MOTION_FALLBACK_MS);
+}
+
+function cancel_motion_flush(inputs)
+{
+    if (inputs.motion_frame !== undefined)
+        window.cancelAnimationFrame(inputs.motion_frame);
+    if (inputs.motion_timer !== undefined)
+        window.clearTimeout(inputs.motion_timer);
+    inputs.motion_frame = undefined;
+    inputs.motion_timer = undefined;
+}
+
+function flush_motion(sc)
+{
+    var inputs = sc.inputs;
+    if (! inputs)
+        return;
+    cancel_motion_flush(inputs);
+    if (! inputs.pending_motion || inputs.state !== "ready")
+    {
+        inputs.pending_motion = undefined;
+        return;
+    }
+    /* Left pending when the window is full: the ack handler retries. */
+    if (send_motion(sc, inputs.pending_motion.x, inputs.pending_motion.y))
+        inputs.pending_motion = undefined;
 }
 
 function handle_mousedown(e)
