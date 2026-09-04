@@ -28,6 +28,11 @@ interface Sample {
   putMPx: number;
   draws: number;
   gets: number;
+  /* From the start of the work to the first canvas write; -1 when nothing was drawn. */
+  firstPaintMs: number;
+  /* The client's ordered draw queue, sampled every few ms during the work. */
+  queueMax: number;
+  queueMean: number;
 }
 
 type Baselines = Record<string, Partial<Sample>>;
@@ -36,9 +41,9 @@ type Baselines = Record<string, Partial<Sample>>;
    may exceed its baseline by TOLERANCE plus the metric's noise floor: the
    floor keeps sub-100 ms baselines from failing on scheduler jitter, and
    it is what makes the gate loose in absolute terms for small workloads. */
-const GATED: Array<keyof Sample> = ["taskMs", "scriptMs", "heapDeltaMB", "longTaskMs"];
+const GATED: Array<keyof Sample> = ["taskMs", "scriptMs", "heapDeltaMB", "longTaskMs", "firstPaintMs"];
 const TOLERANCE = 0.25;
-const NOISE_FLOOR: Partial<Record<keyof Sample, number>> = { taskMs: 50, scriptMs: 50, longTaskMs: 50, heapDeltaMB: 2 };
+const NOISE_FLOOR: Partial<Record<keyof Sample, number>> = { taskMs: 50, scriptMs: 50, longTaskMs: 50, heapDeltaMB: 2, firstPaintMs: 150 };
 
 function loadBaselines(): Baselines {
   try {
@@ -58,10 +63,12 @@ async function measure(page: import("@playwright/test").Page, cdp: CDPSession, w
   await cdp.send("HeapProfiler.collectGarbage");
   const c0 = await counters();
   const m0 = await metrics(cdp);
+  const p0 = await startMeasure(page);
   const t0 = Date.now();
   await work();
   const wallMs = Date.now() - t0;
   await page.waitForTimeout(250);
+  await stopMeasure(page);
   await cdp.send("HeapProfiler.collectGarbage");
   const m1 = await metrics(cdp);
   const c1 = await counters();
@@ -80,7 +87,24 @@ async function measure(page: import("@playwright/test").Page, cdp: CDPSession, w
     putMPx: Math.round((c1.putPixels - c0.putPixels) / 1e5) / 10,
     draws: c1.drawImage - c0.drawImage,
     gets: c1.getImageData - c0.getImageData,
+    firstPaintMs: c1.firstDrawAt ? Math.round(c1.firstDrawAt - p0) : -1,
+    queueMax: c1.queueMax,
+    queueMean: c1.queueSamples ? Math.round((c1.queueSum / c1.queueSamples) * 100) / 100 : 0,
   };
+}
+
+/* The page-side sampler lives on window.__counters (fixtures.ts). */
+function startMeasure(page: import("@playwright/test").Page) {
+  return page.evaluate(() => {
+    const c = (window as unknown as { __counters: { markDraws: () => void; startQueueSampler: () => void } }).__counters;
+    c.markDraws();
+    c.startQueueSampler();
+    return performance.now();
+  });
+}
+
+function stopMeasure(page: import("@playwright/test").Page) {
+  return page.evaluate(() => (window as unknown as { __counters: { stopQueueSampler: () => void } }).__counters.stopQueueSampler());
 }
 
 function record(name: string, sample: Sample) {
@@ -287,6 +311,28 @@ test("profile: goldeye win11 replay", async ({ client, spice }) => {
       )
       .toBeGreaterThanOrEqual(95);
   });
+});
+
+/* The desktop scenario (surface, backdrop fill, a 64 KB logo) over a
+   256 kbit/s link with 150 ms each way: how long until the user sees
+   anything after connecting, with the handshake's round trips and the
+   first draws all paying the pipe. */
+test("connect to first paint of the desktop over 256 kbit/s at 150 ms", async ({ client, spice }) => {
+  await client.disconnect();
+  await spice.reset({ shape: { latencyMs: 150, jitterMs: 10, kbps: 256, seed: 6 }, scenario: "desktop" });
+  const cdp = await client.page.context().newCDPSession(client.page);
+  await cdp.send("Performance.enable");
+  const sample = await measure(
+    client.page,
+    cdp,
+    async () => {
+      await client.connectReady();
+      await client.expectPixel(100, 100, [255, 0, 0], 8, 30_000);
+    },
+    () => client.counters(),
+  );
+  expect(sample.firstPaintMs).toBeGreaterThan(600);
+  record("desktop-first-paint-shaped-256kbps-150ms", sample);
 });
 
 /* The bitmap burst through a shaped pipe: 20 Mbit/s and 150 ms, a LAN's
