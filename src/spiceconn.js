@@ -567,12 +567,41 @@ SpiceConn.prototype =
         if (this.state === state)
             return;
         this.state = state;
+        var event = { channel: this.type, name: Constants.SPICE_CHANNEL_NAMES[this.type] || ("channel" + this.type),
+                      id: this.chan_id, state: state, detail: detail };
+        /* The first state is set inside the constructor, before `new`
+           has returned, and an application's callback may reach for the
+           connection through the variable it is still assigning. States
+           set before the constructor's task ends are delivered once it
+           has, in order, and still ahead of any socket event, which is a
+           task of its own. */
+        if (! this.states_flow)
+        {
+            if (! this.pending_states)
+            {
+                this.pending_states = [];
+                var conn = this;
+                Promise.resolve().then(function()
+                {
+                    conn.states_flow = true;
+                    var pending = conn.pending_states;
+                    conn.pending_states = undefined;
+                    for (var i = 0; i < pending.length; i++)
+                        conn.emit_state(pending[i]);
+                });
+            }
+            this.pending_states.push(event);
+            return;
+        }
+        this.emit_state(event);
+    },
+
+    emit_state: function(event)
+    {
         var cb = this.onstate !== undefined ? this.onstate :
                  (this.parent !== undefined ? this.parent.onstate : undefined);
-        if (cb === undefined)
-            return;
-        cb({ channel: this.type, name: Constants.SPICE_CHANNEL_NAMES[this.type] || ("channel" + this.type),
-             id: this.chan_id, state: state, detail: detail }, this);
+        if (cb !== undefined)
+            cb(event, this);
     },
 
     cleanup: function()
