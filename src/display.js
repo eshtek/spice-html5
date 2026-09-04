@@ -216,24 +216,6 @@ function clipped_rects(box, clip)
     return out;
 }
 
-/* dest ^= brush over a rectangle; canvas has no xor blend, and
-   "difference" only matches for a white brush. */
-function xor_rect(context, r, color)
-{
-    var w = r.right - r.left;
-    var h = r.bottom - r.top;
-    var d = context.getImageData(r.left, r.top, w, h);
-    var p = d.data;
-    var cr = (color >> 16) & 0xff, cg = (color >> 8) & 0xff, cb = color & 0xff;
-    for (var i = 0; i < p.length; i += 4)
-    {
-        p[i] ^= cr;
-        p[i + 1] ^= cg;
-        p[i + 2] ^= cb;
-    }
-    context.putImageData(d, r.left, r.top);
-}
-
 /* The glyphs of a string as one RGBA image in the fore colour, alpha
    from coverage, positioned at its top-left; undefined for no glyphs. */
 function render_string_mask(str, color)
@@ -358,27 +340,102 @@ function rop_apply(rop, s, d)
     return d;
 }
 
-/* A Windows ternary rop: bit (p, s, d) of the code says what a bit of
-   pattern, source and destination becomes. */
-function rop3_apply(code, p, s, d)
+/* A Windows ternary rop on one byte: bit (p, s, d) of the code says
+   what a bit of pattern, source and destination becomes, so the code's
+   eight bits pick which of the eight minterms are kept. */
+function rop3_byte(code, p, s, d)
 {
+    var np = ~p & 0xff, ns = ~s & 0xff, nd = ~d & 0xff;
     var r = 0;
-    for (var bit = 1; bit < 256; bit <<= 1)
-    {
-        var idx = ((p & bit) ? 4 : 0) | ((s & bit) ? 2 : 0) | ((d & bit) ? 1 : 0);
-        if (code & (1 << idx))
-            r |= bit;
-    }
+    if (code & 1)   r |= np & ns & nd;
+    if (code & 2)   r |= np & ns & d;
+    if (code & 4)   r |= np & s & nd;
+    if (code & 8)   r |= np & s & d;
+    if (code & 16)  r |= p & ns & nd;
+    if (code & 32)  r |= p & ns & d;
+    if (code & 64)  r |= p & s & nd;
+    if (code & 128) r |= p & s & d;
     return r;
 }
 
-/* Runs fn(sr, sg, sb, dr, dg, db, out, o) over the pixels of `rects`
-   (the parts of `box` a draw may touch) and writes out[o..o+2] back.
-   Source pixels come from source.image_data at the position matching
-   the destination pixel through source.src (its src_area) when there
-   is a source; mask.bits, offset by mask.pos, excludes pixels. */
-function combine_rects(context, box, rects, source, mask, fn)
+/*----------------------------------------------------------------------------
+**  Combine tables.  A pixel op is three byte lookup tables, one per
+**  channel, indexed by the destination byte ("d"), the source byte
+**  ("s") or both ("sd": source << 8 | destination), so the pixel loop
+**  does a read and a write per channel with no call and no switch.
+**  Building a 64K table costs about as much as a 150x150 op, so the
+**  ones that recur are kept.
+**--------------------------------------------------------------------------*/
+var ROP_TABLES = [];
+var ROP3_TABLES = {};
+var ROP3_TABLES_MAX = 32;
+
+function channel_tables(by, fn)
 {
+    var n = by == "sd" ? 65536 : 256;
+    var t = [ new Uint8Array(n), new Uint8Array(n), new Uint8Array(n) ];
+    for (var c = 0; c < 3; c++)
+        for (var i = 0; i < n; i++)
+            t[c][i] = by == "sd" ? fn(c, i >> 8, i & 0xff) : fn(c, i, i);
+    return { by: by, r: t[0], g: t[1], b: t[2] };
+}
+
+/* Source combined with destination by a binary rop. */
+function rop_tables(rop)
+{
+    if (! ROP_TABLES[rop])
+    {
+        var t = new Uint8Array(65536);
+        for (var i = 0; i < 65536; i++)
+            t[i] = rop_apply(rop, i >> 8, i & 0xff);
+        ROP_TABLES[rop] = { by: "sd", r: t, g: t, b: t };
+    }
+    return ROP_TABLES[rop];
+}
+
+/* A solid brush combined with the source by a binary rop (Opaque). */
+function brush_tables(rop, color)
+{
+    var ch = [ (color >> 16) & 0xff, (color >> 8) & 0xff, color & 0xff ];
+    return channel_tables("s", function(c, s) { return rop_apply(rop, ch[c], s); });
+}
+
+/* A solid brush put over, or xored into, the destination. */
+function fill_tables(color, xor)
+{
+    var ch = [ (color >> 16) & 0xff, (color >> 8) & 0xff, color & 0xff ];
+    return channel_tables("d", function(c, d) { return xor ? d ^ ch[c] : ch[c]; });
+}
+
+/* The destination alone: a constant, or inverted. */
+function dest_tables(value, invert)
+{
+    return channel_tables("d", function(c, d) { return invert ? 255 - d : value; });
+}
+
+/* A ternary rop with a solid brush as the pattern. */
+function rop3_tables(code, color)
+{
+    var key = code + ":" + (color & 0xffffff);
+    if (! ROP3_TABLES[key])
+    {
+        if (Object.keys(ROP3_TABLES).length >= ROP3_TABLES_MAX)
+            ROP3_TABLES = {};
+        var ch = [ (color >> 16) & 0xff, (color >> 8) & 0xff, color & 0xff ];
+        ROP3_TABLES[key] = channel_tables("sd", function(c, s, d) { return rop3_byte(code, ch[c], s, d); });
+    }
+    return ROP3_TABLES[key];
+}
+
+/* Applies `tables` to the pixels of `rects` (the parts of `box` a draw
+   may touch), reading each back from the context and writing it again.
+   Source bytes come from source.image_data at the position matching
+   the destination pixel through source.src (its src_area) when the
+   tables want them; mask.bits, offset by mask.pos, excludes pixels. */
+function combine_rects(context, box, rects, source, mask, tables)
+{
+    var by_sd = tables.by == "sd", by_s = tables.by == "s";
+    var tr = tables.r, tg = tables.g, tb = tables.b;
     var s_data = source ? source.image_data.data : null;
     var s_w = source ? source.image_data.width : 0;
     var s_left = source ? source.src.left : 0;
@@ -389,21 +446,47 @@ function combine_rects(context, box, rects, source, mask, fn)
         var w = r.right - r.left, h = r.bottom - r.top;
         var d = context.getImageData(r.left, r.top, w, h);
         var out = d.data;
+        var o = 0;
         for (var y = 0; y < h; y++)
         {
-            for (var x = 0; x < w; x++)
+            var py = r.top + y;
+            var my = mask ? py - box.top + mask.pos.y : 0;
+            if (mask && (my < 0 || my >= mask.height))
             {
-                var px = r.left + x, py = r.top + y;
+                o += w * 4;
+                continue;
+            }
+            var mrow = my * (mask ? mask.width : 0);
+            var srow = (py - box.top + s_top) * s_w;
+            for (var x = 0; x < w; x++, o += 4)
+            {
+                var px = r.left + x;
                 if (mask)
                 {
-                    var mx = px - box.left + mask.pos.x, my = py - box.top + mask.pos.y;
-                    if (mx < 0 || my < 0 || mx >= mask.width || my >= mask.height || ! mask.bits[my * mask.width + mx])
+                    var mx = px - box.left + mask.pos.x;
+                    if (mx < 0 || mx >= mask.width || ! mask.bits[mrow + mx])
                         continue;
                 }
-                var o = (y * w + x) * 4;
-                var so = source ? ((py - box.top + s_top) * s_w + (px - box.left + s_left)) * 4 : 0;
-                fn(source ? s_data[so] : 0, source ? s_data[so + 1] : 0, source ? s_data[so + 2] : 0,
-                   out[o], out[o + 1], out[o + 2], out, o);
+                if (by_sd)
+                {
+                    var so = (srow + px - box.left + s_left) * 4;
+                    out[o] = tr[(s_data[so] << 8) | out[o]];
+                    out[o + 1] = tg[(s_data[so + 1] << 8) | out[o + 1]];
+                    out[o + 2] = tb[(s_data[so + 2] << 8) | out[o + 2]];
+                }
+                else if (by_s)
+                {
+                    var so = (srow + px - box.left + s_left) * 4;
+                    out[o] = tr[s_data[so]];
+                    out[o + 1] = tg[s_data[so + 1]];
+                    out[o + 2] = tb[s_data[so + 2]];
+                }
+                else
+                {
+                    out[o] = tr[out[o]];
+                    out[o + 1] = tg[out[o + 1]];
+                    out[o + 2] = tb[out[o + 2]];
+                }
             }
         }
         context.putImageData(d, r.left, r.top);
@@ -989,28 +1072,14 @@ SpiceDisplayConn.prototype.process_channel_message = function(msg)
                     return;
                 var rects = clipped_rects(draw_fill.base.box, draw_fill.base.clip);
                 var ctx = rop_surface.canvas.context;
-                if (fill_mask)
+                var xor = fill_rop == Constants.SPICE_ROPD_OP_XOR;
+                if (fill_mask || xor)
+                    combine_rects(ctx, draw_fill.base.box, rects, null, fill_mask, fill_tables(rop_color, xor));
+                else
                 {
-                    var mr = (rop_color >> 16) & 0xff, mg = (rop_color >> 8) & 0xff, mb = rop_color & 0xff;
-                    var xor = fill_rop == Constants.SPICE_ROPD_OP_XOR;
-                    combine_rects(ctx, draw_fill.base.box, rects, null, fill_mask, function(sr, sg, sb, dr, dg, db, out, at)
-                    {
-                        out[at] = xor ? dr ^ mr : mr;
-                        out[at + 1] = xor ? dg ^ mg : mg;
-                        out[at + 2] = xor ? db ^ mb : mb;
-                    });
-                    rop_surface.draw_count++;
-                    return;
-                }
-                for (var i = 0; i < rects.length; i++)
-                {
-                    if (fill_rop == Constants.SPICE_ROPD_OP_XOR)
-                        xor_rect(ctx, rects[i], rop_color);
-                    else
-                    {
-                        ctx.fillStyle = rop_color ? "#ffffff" : "#000000";
+                    ctx.fillStyle = rop_color ? "#ffffff" : "#000000";
+                    for (var i = 0; i < rects.length; i++)
                         ctx.fillRect(rects[i].left, rects[i].top, rects[i].right - rects[i].left, rects[i].bottom - rects[i].top);
-                    }
                 }
                 rop_surface.draw_count++;
             });
@@ -1095,7 +1164,7 @@ SpiceDisplayConn.prototype.process_channel_message = function(msg)
         if (! opaque_source)
             return false;
         var opaque_mask = this.decode_mask("DrawOpaque", opaque.data.mask);
-        var br = (opaque.data.brush.color >> 16) & 0xff, bg = (opaque.data.brush.color >> 8) & 0xff, bb = opaque.data.brush.color & 0xff;
+        var opaque_tables = brush_tables(opaque_rop, opaque.data.brush.color);
         this.enqueue(function()
         {
             if (! this.surface_live(opaque_surface))
@@ -1105,13 +1174,7 @@ SpiceDisplayConn.prototype.process_channel_message = function(msg)
                 return;
             var src = opaque_source.whole ? { left: 0, top: 0, right: image_data.width, bottom: image_data.height } : opaque.data.src_area;
             combine_rects(opaque_surface.canvas.context, opaque.base.box, clipped_rects(opaque.base.box, opaque.base.clip),
-                          source_for_box(image_data, src, opaque.base.box), opaque_mask,
-                          function(sr, sg, sb, dr, dg, db, out, at)
-                          {
-                              out[at] = rop_apply(opaque_rop, br, sr);
-                              out[at + 1] = rop_apply(opaque_rop, bg, sg);
-                              out[at + 2] = rop_apply(opaque_rop, bb, sb);
-                          });
+                          source_for_box(image_data, src, opaque.base.box), opaque_mask, opaque_tables);
             opaque_surface.draw_count++;
         });
         return true;
@@ -1139,14 +1202,9 @@ SpiceDisplayConn.prototype.process_channel_message = function(msg)
             }
             else
             {
-                var v = plain_type == Constants.SPICE_MSG_DISPLAY_DRAW_WHITENESS ? 255 : 0;
-                var invert = plain_type == Constants.SPICE_MSG_DISPLAY_DRAW_INVERS;
-                combine_rects(ctx, plain.base.box, rects, null, plain_mask, function(sr, sg, sb, dr, dg, db, out, at)
-                {
-                    out[at] = invert ? 255 - dr : v;
-                    out[at + 1] = invert ? 255 - dg : v;
-                    out[at + 2] = invert ? 255 - db : v;
-                });
+                combine_rects(ctx, plain.base.box, rects, null, plain_mask,
+                              dest_tables(plain_type == Constants.SPICE_MSG_DISPLAY_DRAW_WHITENESS ? 255 : 0,
+                                          plain_type == Constants.SPICE_MSG_DISPLAY_DRAW_INVERS));
             }
             plain_surface.draw_count++;
         });
@@ -1173,7 +1231,7 @@ SpiceDisplayConn.prototype.process_channel_message = function(msg)
             return false;
         var rop3_mask = this.decode_mask("DrawRop3", rop3.data.mask);
         var code = rop3.data.rop3;
-        var pr = (rop3.data.brush.color >> 16) & 0xff, pg = (rop3.data.brush.color >> 8) & 0xff, pb = rop3.data.brush.color & 0xff;
+        var rop3_color = rop3.data.brush.color;
         this.enqueue(function()
         {
             if (! this.surface_live(rop3_surface))
@@ -1183,13 +1241,7 @@ SpiceDisplayConn.prototype.process_channel_message = function(msg)
                 return;
             var src = rop3_source.whole ? { left: 0, top: 0, right: image_data.width, bottom: image_data.height } : rop3.data.src_area;
             combine_rects(rop3_surface.canvas.context, rop3.base.box, clipped_rects(rop3.base.box, rop3.base.clip),
-                          source_for_box(image_data, src, rop3.base.box), rop3_mask,
-                          function(sr, sg, sb, dr, dg, db, out, at)
-                          {
-                              out[at] = rop3_apply(code, pr, sr, dr);
-                              out[at + 1] = rop3_apply(code, pg, sg, dg);
-                              out[at + 2] = rop3_apply(code, pb, sb, db);
-                          });
+                          source_for_box(image_data, src, rop3.base.box), rop3_mask, rop3_tables(code, rop3_color));
             rop3_surface.draw_count++;
         });
         return true;
@@ -1932,15 +1984,9 @@ SpiceDisplayConn.prototype.draw_copy_now = function(o)
        there, pixel by pixel. */
     if ((o.rop !== undefined && o.rop != ROP.COPY) || o.mask)
     {
-        var rop = o.rop === undefined ? ROP.COPY : o.rop;
         combine_rects(canvas.context, o.base.box, clipped_rects(o.base.box, o.base.clip),
                       source_for_box(image_data, src, o.base.box), o.mask,
-                      function(sr, sg, sb, dr, dg, db, out, at)
-                      {
-                          out[at] = rop_apply(rop, sr, dr);
-                          out[at + 1] = rop_apply(rop, sg, dg);
-                          out[at + 2] = rop_apply(rop, sb, db);
-                      });
+                      rop_tables(o.rop === undefined ? ROP.COPY : o.rop));
         o.surface.draw_count++;
         return;
     }
