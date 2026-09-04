@@ -1398,12 +1398,25 @@ SpiceDisplayConn.prototype.process_channel_message = function(msg)
             var image_data = tr_source.image_data || (tr_source.resolve ? tr_source.resolve() : undefined);
             if (! image_data)
                 return;
-            var keyed = new ImageData(new Uint8ClampedArray(image_data.data), image_data.width, image_data.height);
-            var p = keyed.data;
-            for (var i = 0; i < p.length; i += 4)
-                p[i + 3] = ((p[i] << 16) | (p[i + 1] << 8) | p[i + 2]) == key ? 0 : 255;
             var box = transparent.base.box;
-            var src = tr_source.whole ? { left: 0, top: 0, right: keyed.width, bottom: keyed.height } : transparent.data.src_area;
+            var area = tr_source.whole ? { left: 0, top: 0, right: image_data.width, bottom: image_data.height } : transparent.data.src_area;
+            /* Only the part that lands in the box is keyed: the source may
+               be a whole cached sheet of which this draw takes an icon. */
+            var kw = area.right - area.left, kh = area.bottom - area.top;
+            var keyed = new ImageData(kw, kh);
+            var p = keyed.data, q = image_data.data;
+            for (var y = 0, o = 0; y < kh; y++)
+            {
+                var qi = ((area.top + y) * image_data.width + area.left) * 4;
+                for (var x = 0; x < kw; x++, o += 4, qi += 4)
+                {
+                    p[o] = q[qi];
+                    p[o + 1] = q[qi + 1];
+                    p[o + 2] = q[qi + 2];
+                    p[o + 3] = ((q[qi] << 16) | (q[qi + 1] << 8) | q[qi + 2]) == key ? 0 : 255;
+                }
+            }
+            var src = { left: 0, top: 0, right: kw, bottom: kh };
             var ctx = tr_surface.canvas.context;
             with_clip(ctx, transparent.base.clip, function()
             {
@@ -1796,7 +1809,7 @@ SpiceDisplayConn.prototype.process_channel_message = function(msg)
             if (! src_image)
                 return;
             var w = comp_area.right, h = comp_area.bottom;
-            var layer = composite_layer(src_image, src_origin, comp_data.src_transform,
+            var layer = composite_layer(0, src_image, src_origin, comp_data.src_transform,
                                         (comp_data.flags >> Constants.SPICE_COMPOSITE_SRC_REPEAT_SHIFT) & 3,
                                         (comp_data.flags >> Constants.SPICE_COMPOSITE_SRC_FILTER_SHIFT) & 7, w, h);
             if (comp_mask)
@@ -1804,12 +1817,12 @@ SpiceDisplayConn.prototype.process_channel_message = function(msg)
                 var mask_image = comp_mask.image_data || (comp_mask.resolve ? comp_mask.resolve() : undefined);
                 if (mask_image)
                 {
-                    var mask_layer = composite_layer(mask_image, mask_origin, comp_data.mask_transform,
+                    var mask_layer = composite_layer(1, mask_image, mask_origin, comp_data.mask_transform,
                                                      (comp_data.flags >> Constants.SPICE_COMPOSITE_MASK_REPEAT_SHIFT) & 3,
                                                      (comp_data.flags >> Constants.SPICE_COMPOSITE_MASK_FILTER_SHIFT) & 7, w, h);
                     var lctx = layer.getContext("2d");
                     lctx.globalCompositeOperation = "destination-in";
-                    lctx.drawImage(mask_layer, 0, 0);
+                    lctx.drawImage(mask_layer, 0, 0, w, h, 0, 0, w, h);
                     lctx.globalCompositeOperation = "source-over";
                 }
             }
@@ -1825,7 +1838,7 @@ SpiceDisplayConn.prototype.process_channel_message = function(msg)
             else if (op != "dst")
             {
                 ctx.globalCompositeOperation = op;
-                ctx.drawImage(layer, comp_box.left, comp_box.top);
+                ctx.drawImage(layer, 0, 0, w, h, comp_box.left, comp_box.top, w, h);
             }
             ctx.restore();
             comp_surface.draw_count++;
