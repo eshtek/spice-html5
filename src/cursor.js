@@ -271,11 +271,7 @@ SpiceCursorConn.prototype.handle_cursor = function(cursor, visible)
             return;
         }
         if (cursor.flags & Constants.SPICE_CURSOR_FLAGS_CACHE_ME)
-        {
-            if (! this.cursor_cache)
-                this.cursor_cache = {};
-            this.cursor_cache[id] = shape;
-        }
+            this.cache_cursor(id, shape);
     }
     if (visible === 0)
         this.hide_cursor();
@@ -283,7 +279,30 @@ SpiceCursorConn.prototype.handle_cursor = function(cursor, visible)
         this.show_cursor(shape);
 }
 
-/* The CSS and PNG for a shape, or undefined for a type not converted. */
+/* The server says which shapes to keep and when to drop them, but a
+   guest that never invalidates (Windows caches a shape per hover) would
+   grow the cache for the life of the session; beyond this many the
+   oldest go, as spice-gtk's cursor cache does. */
+var CURSOR_CACHE_MAX = 256;
+
+SpiceCursorConn.prototype.cache_cursor = function(id, shape)
+{
+    if (! this.cursor_cache)
+    {
+        this.cursor_cache = {};
+        this.cursor_cache_order = [];
+    }
+    if (! (id in this.cursor_cache))
+        this.cursor_cache_order.push(id);
+    this.cursor_cache[id] = shape;
+    while (this.cursor_cache_order.length > CURSOR_CACHE_MAX)
+        delete this.cursor_cache[this.cursor_cache_order.shift()];
+}
+
+/* The CSS and PNG for a shape, or undefined for a type not converted.
+   The shape keeps only what showing it needs: the simulated cursor
+   wants the header's size and hot spot and the pixel byte count, not
+   the pixels themselves. */
 function convert_cursor(cursor)
 {
     var rgba = cursor_to_rgba(cursor.header, cursor.data);
@@ -292,7 +311,8 @@ function convert_cursor(cursor)
     var pngstr = create_rgba_png(cursor.header.width, cursor.header.height, rgba);
     var curstr = 'url(data:image/png,' + pngstr + ') ' +
         cursor.header.hot_spot_x + ' ' + cursor.header.hot_spot_y + ", default";
-    return { curstr: curstr, pngstr: pngstr, cursor: cursor };
+    return { curstr: curstr, pngstr: pngstr,
+             cursor: { header: cursor.header, data: { byteLength: cursor.data.byteLength } } };
 }
 
 SpiceCursorConn.prototype.show_cursor = function(shape)
