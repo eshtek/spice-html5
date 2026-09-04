@@ -209,8 +209,13 @@ function flush_motion(sc)
         inputs.pending_motion = undefined;
 }
 
+/* A button event applies to where the pointer is now, so a position
+   still parked by the coalescer goes first; otherwise the guest would
+   press or release at the previous frame's position. */
 function handle_mousedown(e)
 {
+    if (this.sc)
+        flush_motion(this.sc);
     var press = new Messages.SpiceMsgcMousePress(e.button + 1, 1 << e.button);
     if (this.sc && this.sc.inputs)
         this.sc.inputs.buttons_state = press.buttons_state;
@@ -230,6 +235,8 @@ function handle_contextmenu(e)
 
 function handle_mouseup(e)
 {
+    if (this.sc)
+        flush_motion(this.sc);
     var release = new Messages.SpiceMsgcMouseRelease(e.button + 1, 0);
     if (this.sc && this.sc.inputs)
         this.sc.inputs.buttons_state = 0;
@@ -243,6 +250,8 @@ function handle_mouseup(e)
 
 function handle_mousewheel(e)
 {
+    if (this.sc)
+        flush_motion(this.sc);
     var press = new Messages.SpiceMsgcMousePress;
     var release = new Messages.SpiceMsgcMouseRelease;
     if (e.deltaY < 0)

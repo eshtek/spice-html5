@@ -231,6 +231,29 @@ test.describe("motion coalescing", () => {
     expect((await spice.inbound("inputs", "mouse_position", before)).length).toBe(7);
   });
 
+  test("a button event carries the position parked by the coalescer ahead of it", async ({ client, spice }) => {
+    const bb = (await client.surface().boundingBox())!;
+    await client.page.mouse.move(bb.x + 10, bb.y + 10);
+    const before = await spice.mark();
+    /* Two moves and a click in one task: the second move is parked for the
+       frame, and the press must not overtake it. */
+    await client.page.evaluate(() => {
+      const c = document.querySelector("#spice-screen canvas") as HTMLCanvasElement;
+      const r = c.getBoundingClientRect();
+      const at = (type: string, x: number, y: number) =>
+        c.dispatchEvent(new MouseEvent(type, { clientX: r.left + x, clientY: r.top + y, bubbles: true, cancelable: true, button: 0 }));
+      at("mousemove", 20, 20);
+      at("mousemove", 100, 80);
+      at("mousedown", 100, 80);
+      at("mouseup", 100, 80);
+    });
+    await expect.poll(async () => (await spice.inbound("inputs", "mouse_release", before)).length).toBe(1);
+    const seen = await spice.inbound("inputs", "*", before);
+    const press = seen.findIndex((m) => m.name === "mouse_press");
+    const positions = seen.slice(0, press).filter((m) => m.name === "mouse_position");
+    expect(near([100, 80])(positions.slice(-1).map((m) => [m.fields.x, m.fields.y] as [unknown, unknown]))).toBe(true);
+  });
+
   test("stopping the session cancels a pending flush", async ({ client, spice }) => {
     const bb = (await client.surface().boundingBox())!;
     await client.page.mouse.move(bb.x + 10, bb.y + 10);
