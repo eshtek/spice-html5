@@ -175,6 +175,9 @@ export interface ConnectOptions {
   color_depth?: number;
   coalesce_motion?: boolean;
   sync_lock_keys?: boolean;
+  preopen?: boolean;
+  factory?: boolean;
+  omitUri?: boolean;
 }
 
 export interface StateEvent {
@@ -263,6 +266,10 @@ export class SpiceClient {
 
   errors() {
     return this.page.evaluate(() => (window as unknown as { harness: { errors: string[] } }).harness.errors);
+  }
+
+  factoryCalls() {
+    return this.page.evaluate(() => (window as unknown as { harness: { factoryCalls: Array<[number, number, string]> } }).harness.factoryCalls);
   }
 
   volumes() {

@@ -51,6 +51,16 @@ import { resize_helper, handle_resize } from './resize.js';
 **          dump_id     (optional)  If given, an element to use for
 **                                  dumping every single image + canvas drawn.
 **                                  Sometimes useful for debugging.
+**          ws          (optional)  An open WebSocket to use for the main
+**                                  channel instead of opening one from uri;
+**                                  nothing may have been sent or received
+**                                  on it.  Its url serves the child channels
+**                                  unless websocket_factory is given too.
+**          websocket_factory (optional)  function(uri, channel_type,
+**                                  channel_id) returning a WebSocket, open
+**                                  or opening, for every channel; the way
+**                                  to add subprotocols or headers per
+**                                  connection, or to route channels.
 **          onerror     (optional)  If given, a function to receive async
 **                                  errors.  Note that you should also catch
 **                                  errors for ones that occur inline
@@ -202,6 +212,7 @@ SpiceMainConn.prototype.process_channel_message = function(msg)
         {
             var conn = {
                         uri: this.ws.url,
+                        websocket_factory: this.websocket_factory,
                         parent: this,
                         connection_id : this.connection_id,
                         type : chans.channels[i].type,

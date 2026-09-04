@@ -48,17 +48,30 @@ import { rsa_encrypt } from './ticket.js';
 
 function SpiceConn(o)
 {
-    if (o === undefined || o.uri === undefined || ! o.uri)
+    if (o === undefined)
         throw new Error("You must specify a uri");
-
-    this.ws = new WebSocket(o.uri, 'binary');
-
-    if (! this.ws.binaryType)
-        throw new Error("WebSocket doesn't support binaryType.  Try a different browser.");
 
     this.connection_id = o.connection_id !== undefined ? o.connection_id : 0;
     this.type = o.type !== undefined ? o.type : Constants.SPICE_CHANNEL_MAIN;
     this.chan_id = o.chan_id !== undefined ? o.chan_id : 0;
+    if (o.websocket_factory !== undefined)
+        this.websocket_factory = o.websocket_factory;
+
+    /* The socket: one the application opened itself (main channel only,
+       and nothing must have been sent or received on it), one from its
+       factory, which also opens the child channels' sockets, or one
+       opened here from the uri. */
+    if (o.ws !== undefined)
+        this.ws = o.ws;
+    else if (this.websocket_factory !== undefined)
+        this.ws = this.websocket_factory(o.uri, this.type, this.chan_id);
+    else if (o.uri === undefined || ! o.uri)
+        throw new Error("You must specify a uri");
+    else
+        this.ws = new WebSocket(o.uri, 'binary');
+
+    if (! this.ws || ! this.ws.binaryType)
+        throw new Error("WebSocket doesn't support binaryType.  Try a different browser.");
     if (o.parent !== undefined)
     {
         this.parent = o.parent;
@@ -109,16 +122,11 @@ function SpiceConn(o)
     this.warnings = [];
 
     this.ws.addEventListener('open', function(e) {
-        DEBUG > 0 && console.log(">> WebSockets.onopen");
-        DEBUG > 0 && console.log("id " + this.parent.connection_id +"; type " + this.parent.type);
-
-        /***********************************************************************
-        **          WHERE IT ALL REALLY BEGINS
-        ***********************************************************************/
-        this.parent.send_hdr();
-        this.parent.wire_reader.request(SpiceLinkHeader.prototype.buffer_size());
-        this.parent.set_state("start");
+        this.parent.socket_open();
     });
+    /* A socket handed in already open never fires 'open'. */
+    if (this.ws.readyState === WebSocket.OPEN)
+        this.socket_open();
     this.ws.addEventListener('error', function(e) {
         if ('url' in e.target) {
             this.parent.log_err("WebSocket error: Can't connect to websocket on URL: " + e.target.url);
@@ -556,6 +564,20 @@ SpiceConn.prototype =
     {
         if (this.onsuccess != undefined)
             this.onsuccess(m);
+    },
+
+    /***********************************************************************
+    **          WHERE IT ALL REALLY BEGINS
+    ***********************************************************************/
+    socket_open: function()
+    {
+        if (this.state !== "connecting")
+            return;
+        DEBUG > 0 && console.log(">> WebSockets.onopen");
+        DEBUG > 0 && console.log("id " + this.connection_id +"; type " + this.type);
+        this.send_hdr();
+        this.wire_reader.request(SpiceLinkHeader.prototype.buffer_size());
+        this.set_state("start");
     },
 
     /* Every state change on every channel reaches the application's

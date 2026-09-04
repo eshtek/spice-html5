@@ -33,13 +33,21 @@ const h = {
   volumes: [],
   states: [],
   modifiers: [],
+  factoryCalls: [],
   connect(opts) {
     const uri = opts.uri || ('ws://' + location.host + '/spice');
-    return new Promise((resolve, reject) => {
+    /* preopen: hand the client a socket this page opened and waited for;
+       factory: open every channel's socket through a page function. */
+    const start = opts.preopen
+      ? new Promise((res, rej) => { const ws = new WebSocket(uri, 'binary'); ws.addEventListener('open', () => res(ws)); ws.addEventListener('error', () => rej(new Error('preopen failed'))); })
+      : Promise.resolve(undefined);
+    return start.then((ws) => new Promise((resolve, reject) => {
       let settled = false;
       try {
         h.sc = new Spice.SpiceMainConn({
-          uri,
+          uri: opts.omitUri ? undefined : uri,
+          ws,
+          websocket_factory: opts.factory ? (u, type, id) => { h.factoryCalls.push([type, id, u]); return new WebSocket(u, 'binary'); } : undefined,
           password: opts.password || '',
           preferred_compression: opts.preferred_compression,
           screen_id: 'spice-screen',
@@ -67,7 +75,7 @@ const h = {
         h.errors.push(e.message);
         if (!settled) { settled = true; reject(e); }
       }
-    });
+    }));
   },
   disconnect() {
     if (h.sc) { h.sc.stop(); h.sc = null; window.spice_connection = undefined; }
