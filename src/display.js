@@ -189,6 +189,110 @@ function putImageDataClipped(context, d, x, y, clip, src)
     }
 }
 
+/* "rgb(r, g, b)" for a solid brush, undefined for the pattern kind. */
+function brush_color(brush)
+{
+    if (! brush || brush.type != Constants.SPICE_BRUSH_TYPE_SOLID)
+        return undefined;
+    var color = brush.color & 0xffffff;
+    return "rgb(" + (color >> 16) + ", " + ((color >> 8) & 0xff) + ", " + (color & 0xff) + ")";
+}
+
+/* The parts of a box a draw may touch: the box itself, or its
+   intersection with each clip rectangle. */
+function clipped_rects(box, clip)
+{
+    if (! is_clipped(clip))
+        return [ box ];
+    var rects = clip.rects.rects || [];
+    var out = [];
+    for (var i = 0; i < rects.length; i++)
+    {
+        var r = { left: Math.max(rects[i].left, box.left), top: Math.max(rects[i].top, box.top),
+                  right: Math.min(rects[i].right, box.right), bottom: Math.min(rects[i].bottom, box.bottom) };
+        if (r.right > r.left && r.bottom > r.top)
+            out.push(r);
+    }
+    return out;
+}
+
+/* dest ^= brush over a rectangle; canvas has no xor blend, and
+   "difference" only matches for a white brush. */
+function xor_rect(context, r, color)
+{
+    var w = r.right - r.left;
+    var h = r.bottom - r.top;
+    var d = context.getImageData(r.left, r.top, w, h);
+    var p = d.data;
+    var cr = (color >> 16) & 0xff, cg = (color >> 8) & 0xff, cb = color & 0xff;
+    for (var i = 0; i < p.length; i += 4)
+    {
+        p[i] ^= cr;
+        p[i + 1] ^= cg;
+        p[i + 2] ^= cb;
+    }
+    context.putImageData(d, r.left, r.top);
+}
+
+/* The glyphs of a string as one RGBA image in the fore colour, alpha
+   from coverage, positioned at its top-left; undefined for no glyphs. */
+function render_string_mask(str, color)
+{
+    var g, i, x, y;
+    if (! str || str.glyphs.length == 0)
+        return undefined;
+    var left = Infinity, top = Infinity, right = -Infinity, bottom = -Infinity;
+    for (i = 0; i < str.glyphs.length; i++)
+    {
+        g = str.glyphs[i];
+        var gl = g.render_pos.x + g.glyph_origin.x;
+        var gt = g.render_pos.y + g.glyph_origin.y;
+        left = Math.min(left, gl);
+        top = Math.min(top, gt);
+        right = Math.max(right, gl + g.width);
+        bottom = Math.max(bottom, gt + g.height);
+    }
+    var w = right - left, h = bottom - top;
+    if (w <= 0 || h <= 0)
+        return undefined;
+    var image_data = new ImageData(w, h);
+    var p = image_data.data;
+    var cr = (color >> 16) & 0xff, cg = (color >> 8) & 0xff, cb = color & 0xff;
+    var top_down = str.flags & Constants.SPICE_STRING_FLAGS_RASTER_TOP_DOWN;
+    for (i = 0; i < str.glyphs.length; i++)
+    {
+        g = str.glyphs[i];
+        var ox = g.render_pos.x + g.glyph_origin.x - left;
+        var oy = g.render_pos.y + g.glyph_origin.y - top;
+        for (y = 0; y < g.height; y++)
+        {
+            var row = (top_down ? y : g.height - 1 - y) * g.stride;
+            for (x = 0; x < g.width; x++)
+            {
+                var a;
+                if (str.bits == 1)
+                    a = (g.data[row + (x >> 3)] & (0x80 >> (x & 7))) ? 255 : 0;
+                else if (str.bits == 4)
+                {
+                    var b = g.data[row + (x >> 1)];
+                    a = ((x & 1) ? (b & 0x0f) : (b >> 4)) * 17;
+                }
+                else
+                    a = g.data[row + x];
+                if (! a)
+                    continue;
+                var o = ((oy + y) * w + ox + x) * 4;
+                p[o] = cr;
+                p[o + 1] = cg;
+                p[o + 2] = cb;
+                if (a > p[o + 3])
+                    p[o + 3] = a;
+            }
+        }
+    }
+    return { image_data: image_data, left: left, top: top, width: w, height: h };
+}
+
 /* JPEG frames used to be turned into percent-encoded data: URIs one byte at
    a time — an O(n) string build per frame that dominated MJPEG playback.
    A Blob URL hands the bytes to the decoder directly; it must be revoked
@@ -416,9 +520,8 @@ SpiceDisplayConn.prototype.process_channel_message = function(msg)
 
         if (draw_copy.data && draw_copy.data.src_bitmap)
         {
-            if (draw_copy.data.src_bitmap.descriptor.flags &&
-                draw_copy.data.src_bitmap.descriptor.flags != Constants.SPICE_IMAGE_FLAGS_CACHE_ME &&
-                draw_copy.data.src_bitmap.descriptor.flags != Constants.SPICE_IMAGE_FLAGS_HIGH_BITS_SET)
+            if (draw_copy.data.src_bitmap.descriptor.flags &
+                ~(Constants.SPICE_IMAGE_FLAGS_CACHE_ME | Constants.SPICE_IMAGE_FLAGS_HIGH_BITS_SET))
             {
                 this.log_warn("FIXME: DrawCopy unhandled image flags: " + draw_copy.data.src_bitmap.descriptor.flags);
                 Utils.DEBUG <= 1 && this.log_draw("DrawCopy", draw_copy);
@@ -669,14 +772,43 @@ SpiceDisplayConn.prototype.process_channel_message = function(msg)
 
         Utils.DEBUG > 1 && this.log_draw("DrawFill", draw_fill);
 
-        if (draw_fill.data.rop_descriptor != Constants.SPICE_ROPD_OP_PUT)
+        var fill_rop = draw_fill.data.rop_descriptor;
+        if (fill_rop != Constants.SPICE_ROPD_OP_PUT && fill_rop != Constants.SPICE_ROPD_OP_XOR &&
+            fill_rop != Constants.SPICE_ROPD_OP_BLACKNESS && fill_rop != Constants.SPICE_ROPD_OP_WHITENESS)
             this.log_warn("FIXME: DrawFill we don't handle ropd type: " + draw_fill.data.rop_descriptor);
         if (draw_fill.data.mask.flags)
             this.log_warn("FIXME: DrawFill we don't handle mask flag: " + draw_fill.data.mask.flags);
         if (draw_fill.data.mask.bitmap)
             this.log_warn("FIXME: DrawFill we don't handle mask");
 
-        if (draw_fill.data.brush.type == Constants.SPICE_BRUSH_TYPE_SOLID)
+        if (fill_rop == Constants.SPICE_ROPD_OP_BLACKNESS || fill_rop == Constants.SPICE_ROPD_OP_WHITENESS ||
+            (draw_fill.data.brush.type == Constants.SPICE_BRUSH_TYPE_SOLID && fill_rop == Constants.SPICE_ROPD_OP_XOR))
+        {
+            /* Blackness and whiteness ignore the brush; xor inverts the
+               destination through it (a white brush is the caret). */
+            var rop_color = fill_rop == Constants.SPICE_ROPD_OP_BLACKNESS ? 0 :
+                            fill_rop == Constants.SPICE_ROPD_OP_WHITENESS ? 0xffffff : draw_fill.data.brush.color & 0xffffff;
+            var rop_surface = this.surfaces[draw_fill.base.surface_id];
+            this.enqueue(function()
+            {
+                if (! this.surface_live(rop_surface))
+                    return;
+                var rects = clipped_rects(draw_fill.base.box, draw_fill.base.clip);
+                var ctx = rop_surface.canvas.context;
+                for (var i = 0; i < rects.length; i++)
+                {
+                    if (fill_rop == Constants.SPICE_ROPD_OP_XOR)
+                        xor_rect(ctx, rects[i], rop_color);
+                    else
+                    {
+                        ctx.fillStyle = rop_color ? "#ffffff" : "#000000";
+                        ctx.fillRect(rects[i].left, rects[i].top, rects[i].right - rects[i].left, rects[i].bottom - rects[i].top);
+                    }
+                }
+                rop_surface.draw_count++;
+            });
+        }
+        else if (draw_fill.data.brush.type == Constants.SPICE_BRUSH_TYPE_SOLID)
         {
             // FIXME - do brushes ever have alpha?
             var color = draw_fill.data.brush.color & 0xffffff;
@@ -761,7 +893,106 @@ SpiceDisplayConn.prototype.process_channel_message = function(msg)
 
     if (msg.type == Constants.SPICE_MSG_DISPLAY_DRAW_STROKE)
     {
-        this.known_unimplemented(msg.type, "Display Draw Stroke");
+        var stroke = new Messages.SpiceMsgDisplayDrawStroke(msg.data);
+        Utils.DEBUG > 1 && this.log_draw("DrawStroke", stroke);
+        var stroke_color = brush_color(stroke.data.brush);
+        if (stroke_color === undefined)
+        {
+            this.log_warn("FIXME: DrawStroke can't handle brush type: " + stroke.data.brush.type);
+            return false;
+        }
+        if (! stroke.data.path)
+        {
+            this.log_warn("FIXME: DrawStroke without a path");
+            return false;
+        }
+        if (stroke.data.fore_mode != Constants.SPICE_ROPD_OP_PUT)
+            this.log_warn("FIXME: DrawStroke we don't handle fore_mode: " + stroke.data.fore_mode);
+        var stroke_surface = this.surfaces[stroke.base.surface_id];
+        this.enqueue(function()
+        {
+            if (! this.surface_live(stroke_surface))
+                return;
+            var ctx = stroke_surface.canvas.context;
+            ctx.save();
+            with_clip(ctx, stroke.base.clip, function()
+            {
+                ctx.strokeStyle = stroke_color;
+                ctx.lineWidth = 1;
+                ctx.lineCap = "butt";
+                if (stroke.data.attr.flags & Constants.SPICE_LINE_FLAGS_STYLED && stroke.data.attr.style.length)
+                    ctx.setLineDash(stroke.data.attr.style);
+                /* Pixel centres, so a one pixel line covers one pixel. */
+                ctx.translate(0.5, 0.5);
+                ctx.beginPath();
+                var segs = stroke.data.path.segments;
+                for (var s = 0; s < segs.length; s++)
+                {
+                    var pts = segs[s].points;
+                    var p = 0;
+                    if (segs[s].flags & Constants.SPICE_PATH_BEGIN && pts.length)
+                    {
+                        ctx.moveTo(pts[0].x, pts[0].y);
+                        p = 1;
+                    }
+                    if (segs[s].flags & Constants.SPICE_PATH_BEZIER)
+                        for (; p + 2 < pts.length; p += 3)
+                            ctx.bezierCurveTo(pts[p].x, pts[p].y, pts[p + 1].x, pts[p + 1].y, pts[p + 2].x, pts[p + 2].y);
+                    else
+                        for (; p < pts.length; p++)
+                            ctx.lineTo(pts[p].x, pts[p].y);
+                    if ((segs[s].flags & Constants.SPICE_PATH_END) && (segs[s].flags & Constants.SPICE_PATH_CLOSE))
+                        ctx.closePath();
+                }
+                ctx.stroke();
+            });
+            ctx.restore();
+            stroke_surface.draw_count++;
+        });
+        return true;
+    }
+
+    if (msg.type == Constants.SPICE_MSG_DISPLAY_DRAW_TEXT)
+    {
+        var text = new Messages.SpiceMsgDisplayDrawText(msg.data);
+        Utils.DEBUG > 1 && this.log_draw("DrawText", text);
+        if (! text.data.str)
+        {
+            this.log_warn("FIXME: DrawText without a string");
+            return false;
+        }
+        if (text.data.fore_mode != Constants.SPICE_ROPD_OP_PUT || text.data.back_mode != Constants.SPICE_ROPD_OP_PUT)
+            this.log_warn("FIXME: DrawText we don't handle rop modes " + text.data.fore_mode + "/" + text.data.back_mode);
+        if (text.data.fore_brush.type != Constants.SPICE_BRUSH_TYPE_SOLID)
+        {
+            this.log_warn("FIXME: DrawText can't handle fore brush type: " + text.data.fore_brush.type);
+            return false;
+        }
+        var back_area = text.data.back_area;
+        var back_empty = back_area.right <= back_area.left || back_area.bottom <= back_area.top;
+        var back_color = brush_color(text.data.back_brush);
+        if (! back_empty && back_color === undefined)
+            this.log_warn("FIXME: DrawText can't handle back brush type: " + text.data.back_brush.type);
+        var mask = render_string_mask(text.data.str, text.data.fore_brush.color);
+        var text_surface = this.surfaces[text.base.surface_id];
+        this.enqueue(function()
+        {
+            if (! this.surface_live(text_surface))
+                return;
+            var ctx = text_surface.canvas.context;
+            with_clip(ctx, text.base.clip, function()
+            {
+                if (! back_empty && back_color !== undefined)
+                {
+                    ctx.fillStyle = back_color;
+                    ctx.fillRect(back_area.left, back_area.top, back_area.right - back_area.left, back_area.bottom - back_area.top);
+                }
+                if (mask)
+                    putImageDataWithAlpha(ctx, mask.image_data, mask.left, mask.top,
+                                          { left: 0, top: 0, right: mask.width, bottom: mask.height }, mask.width, mask.height);
+            });
+            text_surface.draw_count++;
+        });
         return true;
     }
 
@@ -773,7 +1004,37 @@ SpiceDisplayConn.prototype.process_channel_message = function(msg)
 
     if (msg.type == Constants.SPICE_MSG_DISPLAY_DRAW_ALPHA_BLEND)
     {
-        this.known_unimplemented(msg.type, "Display Draw Alpha Blend");
+        var blend = new Messages.SpiceMsgDisplayDrawAlphaBlend(msg.data);
+        Utils.DEBUG > 1 && this.log_draw("DrawAlphaBlend", blend);
+        if (! blend.data.src_bitmap)
+        {
+            this.log_warn("FIXME: DrawAlphaBlend no src_bitmap.");
+            return false;
+        }
+        var blend_surface = this.surfaces[blend.base.surface_id];
+        var source = this.resolve_source_image("DrawAlphaBlend", blend.data.src_bitmap, blend_surface.canvas, blend.data.src_area);
+        if (! source)
+            return false;
+        var alpha = blend.data.alpha / 255;
+        this.enqueue(function()
+        {
+            if (! this.surface_live(blend_surface))
+                return;
+            var image_data = source.image_data || (source.resolve ? source.resolve() : undefined);
+            if (! image_data || alpha == 0)
+                return;
+            var ctx = blend_surface.canvas.context;
+            var box = blend.base.box;
+            var w = box.right - box.left, h = box.bottom - box.top;
+            var src = source.whole ? { left: 0, top: 0, right: image_data.width, bottom: image_data.height } : blend.data.src_area;
+            ctx.globalAlpha = alpha;
+            with_clip(ctx, blend.base.clip, function()
+            {
+                putImageDataWithAlpha(ctx, image_data, box.left, box.top, src, w, h);
+            });
+            ctx.globalAlpha = 1;
+            blend_surface.draw_count++;
+        });
         return true;
     }
 
@@ -1097,6 +1358,72 @@ SpiceDisplayConn.prototype.delete_surface = function(surface_id)
     delete this.surfaces[surface_id];
 }
 
+
+/* A draw's source image for ops that blend rather than copy: the same
+   decoders as the DrawCopy branches, minus the JPEG kinds, which decode
+   asynchronously.  Returns { image_data } for an image decoded now,
+   { resolve } for a cache or surface read when the op runs (a surface
+   read covers src_area, so `whole` says to use all of it), or undefined
+   with a warning.  A cacheable image goes into the cache now, as
+   draw_copy_helper does. */
+SpiceDisplayConn.prototype.resolve_source_image = function(tag, image, canvas, src_area)
+{
+    var d = image.descriptor;
+    var sc = this;
+    var out;
+    switch (d.type)
+    {
+        case Constants.SPICE_IMAGE_TYPE_QUIC:
+            if (! image.quic)
+                break;
+            out = { image_data: Quic.convert_spice_quic_to_web(canvas.context, image.quic) };
+            break;
+        case Constants.SPICE_IMAGE_TYPE_BITMAP:
+            if (image.bitmap)
+                out = { image_data: convert_spice_bitmap_to_web(canvas.context, image.bitmap) };
+            break;
+        case Constants.SPICE_IMAGE_TYPE_LZ_RGB:
+            if (image.lz_rgb)
+                out = { image_data: convert_spice_lz_to_web(canvas.context, image.lz_rgb) };
+            break;
+        case Constants.SPICE_IMAGE_TYPE_LZ4:
+            if (image.lz4)
+                out = { image_data: convert_spice_lz4_to_web(canvas.context, d, image.lz4) };
+            break;
+        case Constants.SPICE_IMAGE_TYPE_FROM_CACHE:
+        case Constants.SPICE_IMAGE_TYPE_FROM_CACHE_LOSSLESS:
+            out = { resolve: function()
+                    {
+                        if (sc.cache && sc.cache[d.id])
+                            return sc.cache[d.id];
+                        sc.log_warn("FIXME: " + tag + " did not find image id " + d.id + " in cache.");
+                        return undefined;
+                    } };
+            break;
+        case Constants.SPICE_IMAGE_TYPE_SURFACE:
+            var source_surface = this.surfaces[image.surface_id];
+            out = { whole: true, resolve: function()
+                    {
+                        if (! sc.surface_live(source_surface))
+                            return undefined;
+                        return source_surface.canvas.context.getImageData(src_area.left, src_area.top,
+                                    src_area.right - src_area.left, src_area.bottom - src_area.top);
+                    } };
+            break;
+    }
+    if (! out || (! out.image_data && ! out.resolve))
+    {
+        this.log_warn("FIXME: " + tag + " unhandled image type: " + d.type);
+        return undefined;
+    }
+    if (out.image_data && (d.flags & Constants.SPICE_IMAGE_FLAGS_CACHE_ME))
+    {
+        if (! ("cache" in this))
+            this.cache = {};
+        this.cache[d.id] = out.image_data;
+    }
+    return out;
+}
 
 SpiceDisplayConn.prototype.draw_copy_helper = function(o)
 {

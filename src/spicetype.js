@@ -395,6 +395,182 @@ SpiceCopy.prototype =
     },
 }
 
+function SpiceAlphaBlend()
+{
+}
+
+SpiceAlphaBlend.prototype =
+{
+    from_dv: function(dv, at, mb)
+    {
+        this.alpha_flags = dv.getUint8(at, true); at++;
+        this.alpha = dv.getUint8(at, true); at++;
+        var offset = dv.getUint32(at, true); at += 4;
+        if (offset == 0)
+            this.src_bitmap = null;
+        else
+        {
+            this.src_bitmap = new SpiceImage;
+            this.src_bitmap.from_dv(dv, offset, mb);
+        }
+        this.src_area = new SpiceRect;
+        return this.src_area.from_dv(dv, at, mb);
+    },
+}
+
+/* Signed, unlike SpicePoint: a glyph origin sits above its baseline. */
+function SpiceSignedPoint()
+{
+}
+
+SpiceSignedPoint.prototype =
+{
+    from_dv: function(dv, at, mb)
+    {
+        this.x = dv.getInt32(at, true); at += 4;
+        this.y = dv.getInt32(at, true); at += 4;
+        return at;
+    },
+}
+
+/* A run of raster glyphs, laid out one after another on the wire.  Each
+   row of an A1 glyph is packed most significant bit first and padded to
+   a byte; A4 packs two pixels a byte, high nibble first; A8 is a byte a
+   pixel.  Rows come bottom-up unless RASTER_TOP_DOWN is set. */
+function SpiceString()
+{
+}
+
+SpiceString.prototype =
+{
+    from_dv: function(dv, at, mb)
+    {
+        this.length = dv.getUint16(at, true); at += 2;
+        this.flags = dv.getUint8(at, true); at++;
+        var bits = (this.flags & Constants.SPICE_STRING_FLAGS_RASTER_A8) ? 8 :
+                   (this.flags & Constants.SPICE_STRING_FLAGS_RASTER_A4) ? 4 : 1;
+        this.bits = bits;
+        this.glyphs = [];
+        for (var i = 0; i < this.length; i++)
+        {
+            var g = {};
+            g.render_pos = new SpiceSignedPoint;
+            at = g.render_pos.from_dv(dv, at, mb);
+            g.glyph_origin = new SpiceSignedPoint;
+            at = g.glyph_origin.from_dv(dv, at, mb);
+            g.width = dv.getUint16(at, true); at += 2;
+            g.height = dv.getUint16(at, true); at += 2;
+            g.stride = (g.width * bits + 7) >> 3;
+            g.data = new Uint8Array(mb, at, g.stride * g.height);
+            at += g.stride * g.height;
+            this.glyphs.push(g);
+        }
+        return at;
+    },
+}
+
+function SpiceText()
+{
+}
+
+SpiceText.prototype =
+{
+    from_dv: function(dv, at, mb)
+    {
+        var offset = dv.getUint32(at, true); at += 4;
+        if (offset == 0)
+            this.str = null;
+        else
+        {
+            this.str = new SpiceString;
+            this.str.from_dv(dv, offset, mb);
+        }
+        this.back_area = new SpiceRect;
+        at = this.back_area.from_dv(dv, at, mb);
+        this.fore_brush = new SpiceBrush;
+        at = this.fore_brush.from_dv(dv, at, mb);
+        this.back_brush = new SpiceBrush;
+        at = this.back_brush.from_dv(dv, at, mb);
+        this.fore_mode = dv.getUint16(at, true); at += 2;
+        this.back_mode = dv.getUint16(at, true); at += 2;
+        return at;
+    },
+}
+
+/* Segments follow one another on the wire; points are 28.4 fixed. */
+function SpicePath()
+{
+}
+
+SpicePath.prototype =
+{
+    from_dv: function(dv, at, mb)
+    {
+        var count = dv.getUint32(at, true); at += 4;
+        this.segments = [];
+        for (var i = 0; i < count; i++)
+        {
+            var seg = { flags: dv.getUint8(at, true), points: [] };
+            at++;
+            var n = dv.getUint32(at, true); at += 4;
+            for (var p = 0; p < n; p++)
+            {
+                seg.points.push({ x: dv.getInt32(at, true) / 16, y: dv.getInt32(at + 4, true) / 16 });
+                at += 8;
+            }
+            this.segments.push(seg);
+        }
+        return at;
+    },
+}
+
+function SpiceLineAttr()
+{
+}
+
+SpiceLineAttr.prototype =
+{
+    from_dv: function(dv, at, mb)
+    {
+        this.flags = dv.getUint8(at, true); at++;
+        this.style = [];
+        if (this.flags & Constants.SPICE_LINE_FLAGS_STYLED)
+        {
+            var n = dv.getUint8(at, true); at++;
+            var offset = dv.getUint32(at, true); at += 4;
+            for (var i = 0; i < n; i++)
+                this.style.push(dv.getInt32(offset + i * 4, true) / 16);
+        }
+        return at;
+    },
+}
+
+function SpiceStroke()
+{
+}
+
+SpiceStroke.prototype =
+{
+    from_dv: function(dv, at, mb)
+    {
+        var offset = dv.getUint32(at, true); at += 4;
+        if (offset == 0)
+            this.path = null;
+        else
+        {
+            this.path = new SpicePath;
+            this.path.from_dv(dv, offset, mb);
+        }
+        this.attr = new SpiceLineAttr;
+        at = this.attr.from_dv(dv, at, mb);
+        this.brush = new SpiceBrush;
+        at = this.brush.from_dv(dv, at, mb);
+        this.fore_mode = dv.getUint16(at, true); at += 2;
+        this.back_mode = dv.getUint16(at, true); at += 2;
+        return at;
+    },
+}
+
 function SpicePoint16()
 {
 }
@@ -497,6 +673,12 @@ export {
   SpiceBrush,
   SpiceFill,
   SpiceCopy,
+  SpiceAlphaBlend,
+  SpiceString,
+  SpiceText,
+  SpicePath,
+  SpiceLineAttr,
+  SpiceStroke,
   SpicePoint16,
   SpicePoint,
   SpiceCursorHeader,

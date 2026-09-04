@@ -73,3 +73,28 @@ test("the goldeye LZ4 recording paints the desktop from LZ4 images alone", async
   expect(await client.errors()).toEqual([]);
   expect((await client.messages()).filter((m) => /Unknown message|FIXME|unhandled/i.test(m))).toEqual([]);
 });
+
+/* Windows 7 with the XPDM QXL driver: DrawText, DrawStroke, DrawAlphaBlend
+   and xor fills, none of which the client used to draw. */
+test("the goldeye Windows 7 recording paints its desktop with no unhandled draw", async ({ client, spice }) => {
+  await spice.reset({ replay: "fixtures/goldeye-win7-xpdm.rec.json" });
+  await client.connectReady({ channels: ["display", "inputs", "cursor"] });
+  await expect
+    .poll(
+      () =>
+        client.page.evaluate(() => {
+          const c = document.getElementById("spice_surface_0") as HTMLCanvasElement | null;
+          if (!c) return 0;
+          const d = c.getContext("2d")!.getImageData(0, 0, c.width, c.height).data;
+          let lit = 0;
+          for (let i = 0; i < d.length; i += 4) if (d[i] + d[i + 1] + d[i + 2] > 30) lit++;
+          return Math.round((100 * lit) / (c.width * c.height));
+        }),
+      { timeout: 20_000 },
+    )
+    .toBeGreaterThanOrEqual(60);
+  await client.page.waitForTimeout(500);
+  if (process.env.SHOT) await client.page.screenshot({ path: process.env.SHOT });
+  expect(await client.errors()).toEqual([]);
+  expect((await client.messages()).filter((m) => /Unknown message|FIXME|unhandled|unimplemented/i.test(m))).toEqual([]);
+});

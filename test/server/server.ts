@@ -740,8 +740,9 @@ export class FakeSpiceServer {
     const out = { ...args };
     const image = args.image as frames.ImageSpec | undefined;
     if (image) {
-      if (msg === "drawCopyBitmap") {
-        out.pixels = frames.rgbaToBGRx(frames.renderRGBA(image));
+      if (msg === "drawCopyBitmap" || msg === "drawAlphaBlendBitmap") {
+        const rgba = frames.renderRGBA(image);
+        out.pixels = args.format === "rgba" ? frames.rgbaToBGRA(rgba) : frames.rgbaToBGRx(rgba);
         out.imageWidth = image.width;
         out.imageHeight = image.height;
       } else if (msg === "drawCopyLz4") {

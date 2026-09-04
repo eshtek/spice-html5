@@ -37,6 +37,9 @@ import {
   SpiceSurface,
   SpicePoint16,
   SpiceCursor,
+  SpiceAlphaBlend,
+  SpiceText,
+  SpiceStroke,
 } from './spicetype.js';
 import {
   keycode_to_start_scan,
@@ -894,6 +897,60 @@ SpiceMsgDisplayDrawFill.prototype =
     },
 }
 
+function SpiceMsgDisplayDrawAlphaBlend(a, at)
+{
+    this.from_buffer(a, at);
+}
+
+SpiceMsgDisplayDrawAlphaBlend.prototype =
+{
+    from_buffer: function(a, at)
+    {
+        at = at || 0;
+        var dv = new DataView(a);
+        this.base = new SpiceMsgDisplayBase;
+        at = this.base.from_dv(dv, at, a);
+        this.data = new SpiceAlphaBlend;
+        return this.data.from_dv(dv, at, a);
+    },
+}
+
+function SpiceMsgDisplayDrawText(a, at)
+{
+    this.from_buffer(a, at);
+}
+
+SpiceMsgDisplayDrawText.prototype =
+{
+    from_buffer: function(a, at)
+    {
+        at = at || 0;
+        var dv = new DataView(a);
+        this.base = new SpiceMsgDisplayBase;
+        at = this.base.from_dv(dv, at, a);
+        this.data = new SpiceText;
+        return this.data.from_dv(dv, at, a);
+    },
+}
+
+function SpiceMsgDisplayDrawStroke(a, at)
+{
+    this.from_buffer(a, at);
+}
+
+SpiceMsgDisplayDrawStroke.prototype =
+{
+    from_buffer: function(a, at)
+    {
+        at = at || 0;
+        var dv = new DataView(a);
+        this.base = new SpiceMsgDisplayBase;
+        at = this.base.from_dv(dv, at, a);
+        this.data = new SpiceStroke;
+        return this.data.from_dv(dv, at, a);
+    },
+}
+
 function SpiceMsgDisplayCopyBits(a, at)
 {
     this.from_buffer(a, at);
@@ -1600,6 +1657,9 @@ export {
   SpiceMsgDisplayBase,
   SpiceMsgDisplayDrawCopy,
   SpiceMsgDisplayDrawFill,
+  SpiceMsgDisplayDrawAlphaBlend,
+  SpiceMsgDisplayDrawText,
+  SpiceMsgDisplayDrawStroke,
   SpiceMsgDisplayCopyBits,
   SpiceMsgSurfaceCreate,
   SpiceMsgSurfaceDestroy,

@@ -143,12 +143,14 @@ export interface DrawFillArgs {
   box: Rect;
   clip?: Clip;
   color: number; // 0xRRGGBB
+  /* SPICE_ROPD_*; default OP_PUT. */
+  ropd?: number;
 }
 
 export function drawFill(a: DrawFillArgs) {
   const w = new Writer();
   displayBase(w, a.surface ?? 0, a.box, a.clip ?? NO_CLIP);
-  w.u8(C.SPICE_BRUSH_TYPE_SOLID).u32(a.color).u16(C.SPICE_ROPD_OP_PUT);
+  w.u8(C.SPICE_BRUSH_TYPE_SOLID).u32(a.color).u16(a.ropd ?? C.SPICE_ROPD_OP_PUT);
   qmaskNone(w);
   return mini(C.SPICE_MSG_DISPLAY_DRAW_FILL, w.toBytes());
 }
@@ -196,20 +198,151 @@ export interface BitmapArgs extends DrawCopyBase {
   cache?: boolean;
 }
 
+function bitmapImage(w: Writer, a: BitmapArgs, width: number, height: number) {
+  if (a.pixels.length !== width * height * 4) throw new Error("pixel buffer does not match image size");
+  imageDescriptor(w, a.cacheId ?? 0, C.SPICE_IMAGE_TYPE_BITMAP, a.cache ? C.SPICE_IMAGE_FLAGS_CACHE_ME : 0, width, height);
+  w.u8(a.format === "rgba" ? C.SPICE_BITMAP_FMT_RGBA : C.SPICE_BITMAP_FMT_32BIT)
+    .u8(a.topDown === false ? 0 : C.SPICE_BITMAP_FLAGS_TOP_DOWN)
+    .u32(width)
+    .u32(height)
+    .u32(width * 4)
+    .u32(0)
+    .bytes(a.pixels);
+}
+
 export function drawCopyBitmap(a: BitmapArgs) {
   const width = a.imageWidth ?? a.box.right - a.box.left;
   const height = a.imageHeight ?? a.box.bottom - a.box.top;
-  if (a.pixels.length !== width * height * 4) throw new Error("pixel buffer does not match image size");
-  return drawCopyWith(a, (w) => {
-    imageDescriptor(w, a.cacheId ?? 0, C.SPICE_IMAGE_TYPE_BITMAP, a.cache ? C.SPICE_IMAGE_FLAGS_CACHE_ME : 0, width, height);
-    w.u8(a.format === "rgba" ? C.SPICE_BITMAP_FMT_RGBA : C.SPICE_BITMAP_FMT_32BIT)
-      .u8(a.topDown === false ? 0 : C.SPICE_BITMAP_FLAGS_TOP_DOWN)
-      .u32(width)
-      .u32(height)
-      .u32(width * 4)
-      .u32(0)
-      .bytes(a.pixels);
-  });
+  return drawCopyWith(a, (w) => bitmapImage(w, a, width, height));
+}
+
+/* DrawAlphaBlend: the image drawn over the box at a constant alpha. */
+export interface AlphaBlendBase {
+  surface?: number;
+  box: Rect;
+  clip?: Clip;
+  alpha: number;
+  alphaFlags?: number;
+  srcArea?: Rect;
+}
+
+function alphaBlendWith(a: AlphaBlendBase, image: (w: Writer) => void) {
+  const w = new Writer();
+  displayBase(w, a.surface ?? 0, a.box, a.clip ?? NO_CLIP);
+  w.u8(a.alphaFlags ?? 0).u8(a.alpha);
+  const imageOffset = w.placeholderU32();
+  const width = a.box.right - a.box.left;
+  const height = a.box.bottom - a.box.top;
+  w.rect(a.srcArea ?? { top: 0, left: 0, bottom: height, right: width });
+  w.patchU32(imageOffset, w.length);
+  image(w);
+  return mini(C.SPICE_MSG_DISPLAY_DRAW_ALPHA_BLEND, w.toBytes());
+}
+
+export function drawAlphaBlendBitmap(a: AlphaBlendBase & BitmapArgs) {
+  const width = a.imageWidth ?? a.box.right - a.box.left;
+  const height = a.imageHeight ?? a.box.bottom - a.box.top;
+  return alphaBlendWith(a, (w) => bitmapImage(w, a, width, height));
+}
+
+export function drawAlphaBlendFromCache(a: AlphaBlendBase & { cacheId: number }) {
+  const width = a.box.right - a.box.left;
+  const height = a.box.bottom - a.box.top;
+  return alphaBlendWith(a, (w) => imageDescriptor(w, a.cacheId, C.SPICE_IMAGE_TYPE_FROM_CACHE, 0, width, height));
+}
+
+/* DrawText: raster glyphs in the fore colour over an optional back area.
+   Glyph rows are given top-down as strings for A1 ("#" set) or as
+   coverage arrays for A4/A8; the builder packs them the way the wire
+   wants, bottom-up unless topDown. */
+export interface GlyphArgs {
+  x: number;
+  y: number;
+  originX?: number;
+  originY?: number;
+  rows: string[] | number[][];
+}
+
+export interface DrawTextArgs {
+  surface?: number;
+  box: Rect;
+  clip?: Clip;
+  fore: number;
+  back?: number;
+  backArea?: Rect;
+  bits?: 1 | 4 | 8;
+  topDown?: boolean;
+  foreMode?: number;
+  backMode?: number;
+  glyphs: GlyphArgs[];
+}
+
+export function drawText(a: DrawTextArgs) {
+  const bits = a.bits ?? 1;
+  const w = new Writer();
+  displayBase(w, a.surface ?? 0, a.box, a.clip ?? NO_CLIP);
+  const strOffset = w.placeholderU32();
+  w.rect(a.backArea ?? { top: 0, left: 0, bottom: 0, right: 0 });
+  w.u8(C.SPICE_BRUSH_TYPE_SOLID).u32(a.fore);
+  w.u8(C.SPICE_BRUSH_TYPE_SOLID).u32(a.back ?? 0);
+  w.u16(a.foreMode ?? C.SPICE_ROPD_OP_PUT).u16(a.backMode ?? C.SPICE_ROPD_OP_PUT);
+  w.patchU32(strOffset, w.length);
+  const flag = bits === 8 ? C.SPICE_STRING_FLAGS_RASTER_A8 : bits === 4 ? C.SPICE_STRING_FLAGS_RASTER_A4 : C.SPICE_STRING_FLAGS_RASTER_A1;
+  w.u16(a.glyphs.length).u8(flag | (a.topDown ? C.SPICE_STRING_FLAGS_RASTER_TOP_DOWN : 0));
+  for (const g of a.glyphs) {
+    const height = g.rows.length;
+    const width = g.rows[0].length;
+    w.u32(g.x).u32(g.y).u32(g.originX ?? 0).u32(g.originY ?? 0).u16(width).u16(height);
+    const stride = (width * bits + 7) >> 3;
+    const order = a.topDown ? g.rows : [...g.rows].reverse();
+    for (const row of order) {
+      const line = new Uint8Array(stride);
+      for (let x = 0; x < width; x++) {
+        const v = typeof row === "string" ? (row[x] === "#" ? 255 : 0) : row[x];
+        if (bits === 1) { if (v) line[x >> 3] |= 0x80 >> (x & 7); }
+        else if (bits === 4) line[x >> 1] |= (v >> 4) << (x & 1 ? 0 : 4);
+        else line[x] = v;
+      }
+      w.bytes(line);
+    }
+  }
+  return mini(C.SPICE_MSG_DISPLAY_DRAW_TEXT, w.toBytes());
+}
+
+/* DrawStroke: a path of segments in 28.4 fixed point, one pixel wide. */
+export interface StrokeArgs {
+  surface?: number;
+  box: Rect;
+  clip?: Clip;
+  color: number;
+  segments: Array<{ flags?: number; points: Array<[number, number]> }>;
+  dash?: number[];
+  foreMode?: number;
+}
+
+export function drawStroke(a: StrokeArgs) {
+  const w = new Writer();
+  displayBase(w, a.surface ?? 0, a.box, a.clip ?? NO_CLIP);
+  const pathOffset = w.placeholderU32();
+  w.u8(a.dash ? C.SPICE_LINE_FLAGS_STYLED : 0);
+  let styleOffset = -1;
+  if (a.dash) {
+    w.u8(a.dash.length);
+    styleOffset = w.placeholderU32();
+  }
+  w.u8(C.SPICE_BRUSH_TYPE_SOLID).u32(a.color);
+  w.u16(a.foreMode ?? C.SPICE_ROPD_OP_PUT).u16(C.SPICE_ROPD_OP_PUT);
+  w.patchU32(pathOffset, w.length);
+  w.u32(a.segments.length);
+  for (const seg of a.segments) {
+    w.u8(seg.flags ?? C.SPICE_PATH_BEGIN | C.SPICE_PATH_END).u32(seg.points.length);
+    for (const [x, y] of seg.points) w.u32(Math.round(x * 16)).u32(Math.round(y * 16));
+  }
+  if (a.dash) {
+    w.patchU32(styleOffset, w.length);
+    for (const d of a.dash) w.u32(Math.round(d * 16));
+  }
+  return mini(C.SPICE_MSG_DISPLAY_DRAW_STROKE, w.toBytes());
 }
 
 export interface Lz4Args extends DrawCopyBase {
