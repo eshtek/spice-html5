@@ -114,6 +114,14 @@ interface ReplaySession {
   timers: Array<ReturnType<typeof setTimeout>>;
 }
 
+/* A recorded channel's messages decoded once, with the wire framing
+   already on, so a replay pass sends them as they are. */
+interface DecodedMessage {
+  t: number;
+  type: number;
+  bytes: Uint8Array;
+}
+
 export interface InboundRecord extends M.ClientMessage {
   seq: number;
   t: number;
@@ -289,6 +297,7 @@ export class FakeSpiceServer {
   private waiters: Waiter[] = [];
   private seq = 0;
   private recording: Recording | null = null;
+  private decoded = new Map<Recording["connections"][number], DecodedMessage[]>();
   private sessions = new Map<number, ReplaySession>();
   log: string[] = [];
 
@@ -395,6 +404,7 @@ export class FakeSpiceServer {
     this.mmBase = 1000;
     this.config = { ...DEFAULT_CONFIG, ...partial };
     this.recording = null;
+    this.decoded.clear();
     if (this.config.replay) {
       /* Relative to the test tree, not to wherever the runner was launched. */
       const path = isAbsolute(this.config.replay) ? this.config.replay : resolve(TEST_ROOT, this.config.replay);
@@ -1027,35 +1037,56 @@ export class FakeSpiceServer {
     if (conn.channelType === C.SPICE_CHANNEL_MAIN && this.config.replayLoop) this.scheduleLoop(session);
   }
 
-  private scheduleRecorded(session: ReplaySession, conn: Conn, recConn: Recording["connections"][number], skip?: (type: number) => boolean) {
-    /* Every message goes on a timer measured from one clock reading, and
-       overdue ones get a zero delay rather than firing inline: decoding a
-       long recording takes long enough that a later message could come
-       due while an earlier one still sat on a short timer, and firing it
-       on the spot sent a draw ahead of the surface it drew on. Timers with
-       equal delays fire in order, and delays never decrease along the
-       recording, so this keeps the recorded order. */
-    const now = Date.now();
-    for (const m of recConn.server) {
-      if (skip?.(m.type)) continue;
-      const at = session.epoch + m.t / this.config.replaySpeed;
-      let payload = new Uint8Array(Buffer.from(m.data, "base64"));
-      /* The recorded MAIN_INIT names the recorded session; each client
-         gets this session's id instead, and sends it back on its child
-         channels, which is how they find their way here. */
-      if (conn.channelType === C.SPICE_CHANNEL_MAIN && m.type === C.SPICE_MSG_MAIN_INIT && payload.length >= 4) {
-        payload = payload.slice();
-        new DataView(payload.buffer, payload.byteOffset).setUint32(0, session.id, true);
-      }
-      /* The recording keeps type and payload apart; the wire wants the
-         mini header back in front. */
-      const bytes = mini(m.type, payload);
-      const fire = () => {
-        if (conn.state !== "ready") return;
-        this.send(conn, bytes);
-      };
-      session.timers.push(setTimeout(fire, Math.max(0, at - now)));
+  /* The recording keeps type and payload apart; the wire wants the mini
+     header back in front. Done once per recorded channel, not per pass
+     or per session. */
+  private decodedMessages(recConn: Recording["connections"][number]): DecodedMessage[] {
+    let list = this.decoded.get(recConn);
+    if (!list) {
+      list = recConn.server.map((m) => ({ t: m.t, type: m.type, bytes: mini(m.type, new Uint8Array(Buffer.from(m.data, "base64"))) }));
+      this.decoded.set(recConn, list);
     }
+    return list;
+  }
+
+  /* The recorded MAIN_INIT names the recorded session; each client gets
+     this session's id instead, and sends it back on its child channels,
+     which is how they find their way here. */
+  private withSessionId(bytes: Uint8Array, session: ReplaySession): Uint8Array {
+    const copy = bytes.slice();
+    /* Past the mini header: u16 type, u32 size. */
+    if (copy.length >= 10) new DataView(copy.buffer, copy.byteOffset).setUint32(6, session.id, true);
+    return copy;
+  }
+
+  private scheduleRecorded(session: ReplaySession, conn: Conn, recConn: Recording["connections"][number], skip?: (type: number) => boolean) {
+    /* One walker per channel per pass: it sends everything that is due
+       in recorded order, then sleeps until the next message's time, so
+       the pass holds one timer and no closures over frame bytes. Sends
+       never happen inline in the caller, only from the timer, so a draw
+       cannot get ahead of the surface message a caller is still on. */
+    const msgs = this.decodedMessages(recConn);
+    const isMain = conn.channelType === C.SPICE_CHANNEL_MAIN;
+    let i = 0;
+    const step = () => {
+      if (conn.state !== "ready" || !this.sessions.has(session.id)) return;
+      const now = Date.now();
+      while (i < msgs.length) {
+        const m = msgs[i];
+        if (skip?.(m.type)) {
+          i++;
+          continue;
+        }
+        const at = session.epoch + m.t / this.config.replaySpeed;
+        if (at > now) {
+          session.timers.push(setTimeout(step, at - now));
+          return;
+        }
+        i++;
+        this.send(conn, isMain && m.type === C.SPICE_MSG_MAIN_INIT ? this.withSessionId(m.bytes, session) : m.bytes);
+      }
+    };
+    session.timers.push(setTimeout(step, 0));
   }
 
   /* Time (recording ms) of the last recorded server message on any channel. */
