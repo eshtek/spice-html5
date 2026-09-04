@@ -1514,6 +1514,26 @@ SpiceMsgcDisplayPreferredVideoCodecType.prototype =
     }
 }
 
+function SpiceMsgcDisplayPreferredCompression(compression)
+{
+    this.compression = compression;
+}
+
+SpiceMsgcDisplayPreferredCompression.prototype =
+{
+    to_buffer: function(a, at)
+    {
+        at = at || 0;
+        var dv = new DataView(a);
+        dv.setUint8(at, this.compression); at++;
+        return at;
+    },
+    buffer_size: function()
+    {
+        return 1;
+    }
+}
+
 function SpiceMsgDisplayInvalList(a, at)
 {
     this.count = 0;
@@ -1618,6 +1638,7 @@ export {
   SpiceMsgDisplayStreamActivateReport,
   SpiceMsgcDisplayStreamReport,
   SpiceMsgcDisplayPreferredVideoCodecType,
+  SpiceMsgcDisplayPreferredCompression,
   SpiceMsgDisplayInvalList,
   SpiceMsgPortInit,
 };

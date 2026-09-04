@@ -198,13 +198,13 @@ export class SpiceClient {
   }
 
   /* Resolves with the onsuccess payload, rejects with the onerror message. */
-  connect(opts: { password?: string; uri?: string } = {}) {
+  connect(opts: { password?: string; uri?: string; preferred_compression?: string | number } = {}) {
     return this.page.evaluate((o) => (window as unknown as { harness: { connect: (o: unknown) => Promise<string> } }).harness.connect(o), opts);
   }
 
   /* Connects and waits until every default child channel is ready. */
-  async connectReady(opts: { password?: string; channels?: string[] } = {}) {
-    await this.connect({ password: opts.password });
+  async connectReady(opts: { password?: string; channels?: string[]; preferred_compression?: string | number } = {}) {
+    await this.connect({ password: opts.password, preferred_compression: opts.preferred_compression });
     const channels = opts.channels ?? ["display", "inputs", "cursor"];
     await this.page.waitForFunction(
       (names) => {

@@ -213,6 +213,14 @@ SpiceImage.prototype =
 
         }
 
+        if (this.descriptor.type == Constants.SPICE_IMAGE_TYPE_LZ4)
+        {
+            this.lz4 = new Object();
+            this.lz4.data_size = dv.getUint32(at, true); at += 4;
+            this.lz4.data = mb.slice(at, at + this.lz4.data_size);
+            at += this.lz4.data.byteLength;
+        }
+
         if (this.descriptor.type == Constants.SPICE_IMAGE_TYPE_BITMAP)
         {
             this.bitmap = new SpiceBitmap;

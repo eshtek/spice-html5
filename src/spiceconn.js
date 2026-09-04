@@ -85,6 +85,8 @@ function SpiceConn(o)
         this.onsuccess = o.onsuccess;
     if (o.onagent !== undefined)
         this.onagent = o.onagent;
+    if (o.preferred_compression !== undefined)
+        this.preferred_compression = o.preferred_compression;
 
     this.state = "connecting";
     this.ws.parent = this;
@@ -179,6 +181,7 @@ SpiceConn.prototype =
             var caps =  (1 << Constants.SPICE_DISPLAY_CAP_SIZED_STREAM) |
                         (1 << Constants.SPICE_DISPLAY_CAP_STREAM_REPORT) |
                         (1 << Constants.SPICE_DISPLAY_CAP_MULTI_CODEC) |
+                        (1 << Constants.SPICE_DISPLAY_CAP_LZ4_COMPRESSION) |
                         (1 << Constants.SPICE_DISPLAY_CAP_CODEC_MJPEG);
             /* VP8 plays through a VideoDecoder when the browser has one,
                else through MediaSource; H.264 and VP9 need the decoder. */
@@ -315,6 +318,8 @@ SpiceConn.prototype =
                     reply.build_msg(Constants.SPICE_MSGC_DISPLAY_INIT, dinit);
                     DEBUG > 0 && console.log("Request display init");
                     this.send_msg(reply);
+                    if (this.send_preferred_compression)
+                        this.send_preferred_compression();
                 }
                 this.state = "ready";
                 this.wire_reader.request(SpiceMiniData.prototype.buffer_size());

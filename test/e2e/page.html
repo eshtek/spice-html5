@@ -38,6 +38,7 @@ const h = {
         h.sc = new Spice.SpiceMainConn({
           uri,
           password: opts.password || '',
+          preferred_compression: opts.preferred_compression,
           screen_id: 'spice-screen',
           message_id: 'message-div',
           onerror(e) {

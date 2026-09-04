@@ -79,6 +79,28 @@ export function rgbaToBGRA(rgba: Uint8Array): Uint8Array {
   return out;
 }
 
+/* Packed BGR rows, stride = width * 3. */
+export function rgbaToBGR24(rgba: Uint8Array): Uint8Array {
+  const out = new Uint8Array((rgba.length / 4) * 3);
+  for (let i = 0, o = 0; i < rgba.length; i += 4, o += 3) {
+    out[o] = rgba[i + 2];
+    out[o + 1] = rgba[i + 1];
+    out[o + 2] = rgba[i];
+  }
+  return out;
+}
+
+/* x1r5g5b5 little-endian words, stride = width * 2. */
+export function rgbaToRGB555(rgba: Uint8Array): Uint8Array {
+  const out = new Uint8Array((rgba.length / 4) * 2);
+  for (let i = 0, o = 0; i < rgba.length; i += 4, o += 2) {
+    const v = ((rgba[i] >> 3) << 10) | ((rgba[i + 1] >> 3) << 5) | (rgba[i + 2] >> 3);
+    out[o] = v & 0xff;
+    out[o + 1] = v >> 8;
+  }
+  return out;
+}
+
 export function flipRows(pixels: Uint8Array, width: number, height: number, bpp = 4): Uint8Array {
   const stride = width * bpp;
   const out = new Uint8Array(pixels.length);

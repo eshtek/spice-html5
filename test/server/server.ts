@@ -34,6 +34,9 @@ export interface ServerConfig {
   agentConnected: boolean;
   ackWindow: number;
   autoInit: boolean;
+  /* Advertise taking a preferred-compression request (and LZ4 images),
+     the way a real spice-server built with lz4 does. */
+  prefCompressionCap: boolean;
   scenario: string | null;
   replay: string | null;
   replaySpeed: number;
@@ -58,6 +61,7 @@ export const DEFAULT_CONFIG: ServerConfig = {
   agentConnected: false,
   ackWindow: 0,
   autoInit: true,
+  prefCompressionCap: true,
   scenario: null,
   replay: null,
   replaySpeed: 1,
@@ -560,6 +564,7 @@ export class FakeSpiceServer {
         (1 << C.SPICE_DISPLAY_CAP_MULTI_CODEC) |
         (1 << C.SPICE_DISPLAY_CAP_PREF_VIDEO_CODEC_TYPE) |
         (1 << C.SPICE_DISPLAY_CAP_CODEC_MJPEG);
+      if (this.config.prefCompressionCap) channel |= (1 << C.SPICE_DISPLAY_CAP_PREF_COMPRESSION) | (1 << C.SPICE_DISPLAY_CAP_LZ4_COMPRESSION);
     } else if (conn.channelType === C.SPICE_CHANNEL_MAIN) {
       channel = 1 << C.SPICE_MAIN_CAP_AGENT_CONNECTED_TOKENS;
     } else if (conn.channelType === C.SPICE_CHANNEL_PLAYBACK) {
@@ -712,6 +717,18 @@ export class FakeSpiceServer {
     if (image) {
       if (msg === "drawCopyBitmap") {
         out.pixels = frames.rgbaToBGRx(frames.renderRGBA(image));
+        out.imageWidth = image.width;
+        out.imageHeight = image.height;
+      } else if (msg === "drawCopyLz4") {
+        const rgba = frames.renderRGBA(image);
+        const format = (args.format as string | undefined) ?? "32bit";
+        let pixels =
+          format === "rgba" ? frames.rgbaToBGRA(rgba)
+          : format === "24bit" ? frames.rgbaToBGR24(rgba)
+          : format === "16bit" ? frames.rgbaToRGB555(rgba)
+          : frames.rgbaToBGRx(rgba);
+        if (args.topDown === false) pixels = frames.flipRows(pixels, image.width, image.height, pixels.length / (image.width * image.height));
+        out.pixels = pixels;
         out.imageWidth = image.width;
         out.imageHeight = image.height;
       } else if (msg === "drawCopyJpeg") {

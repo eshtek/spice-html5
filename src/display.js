@@ -28,6 +28,7 @@ import { SpiceConn } from './spiceconn.js';
 import { SpiceRect } from './spicetype.js';
 import { convert_spice_lz_to_web } from './lz.js';
 import { convert_spice_bitmap_to_web } from './bitmap.js';
+import { convert_spice_lz4_to_web } from './lz4.js';
 import { VideoCodecs, video_decoder_codec, video_keyframe } from './videocodecs.js';
 
 /*----------------------------------------------------------------------------
@@ -616,6 +617,36 @@ SpiceDisplayConn.prototype.process_channel_message = function(msg)
                       image_data: source_img,
                       tag: "lz_rgb." + draw_copy.data.src_bitmap.lz_rgb.type,
                       has_alpha: draw_copy.data.src_bitmap.lz_rgb.type == Constants.LZ_IMAGE_TYPE_RGBA ? true : false ,
+                      descriptor : draw_copy.data.src_bitmap.descriptor,
+                      scale_mode : draw_copy.data.scale_mode
+                    });
+            }
+            else if (draw_copy.data.src_bitmap.descriptor.type == Constants.SPICE_IMAGE_TYPE_LZ4)
+            {
+                var canvas = this.surfaces[draw_copy.base.surface_id].canvas;
+                if (! draw_copy.data.src_bitmap.lz4)
+                {
+                    this.log_err("null lz4");
+                    return false;
+                }
+
+                var source_img = convert_spice_lz4_to_web(canvas.context,
+                                            draw_copy.data.src_bitmap.descriptor,
+                                            draw_copy.data.src_bitmap.lz4);
+                if (! source_img)
+                {
+                    this.log_warn("FIXME: Unable to interpret lz4 image of " +
+                        draw_copy.data.src_bitmap.lz4.data.byteLength + " bytes");
+                    return false;
+                }
+
+                var lz4_format = new Uint8Array(draw_copy.data.src_bitmap.lz4.data)[1];
+                return this.draw_copy_helper(
+                    { base: draw_copy.base,
+                      src_area: draw_copy.data.src_area,
+                      image_data: source_img,
+                      tag: "lz4." + lz4_format,
+                      has_alpha: lz4_format == Constants.SPICE_BITMAP_FMT_RGBA,
                       descriptor : draw_copy.data.src_bitmap.descriptor,
                       scale_mode : draw_copy.data.scale_mode
                     });
@@ -1292,6 +1323,44 @@ SpiceDisplayConn.prototype.send_preferred_video_codecs = function()
     var msg = new Messages.SpiceMiniData();
     msg.build_msg(Constants.SPICE_MSGC_DISPLAY_PREFERRED_VIDEO_CODEC_TYPE,
                   new Messages.SpiceMsgcDisplayPreferredVideoCodecType(codecs));
+    this.send_msg(msg);
+}
+
+/* The image compression the application asked for, by enum value or by
+   the spice-gtk name ("lz4", "auto_glz", "quic", ...).  Only sent to a
+   server that advertised taking the request; the server keeps its own
+   default otherwise, and always when nothing was asked for. */
+var IMAGE_COMPRESSION_BY_NAME = {
+    off: Constants.SPICE_IMAGE_COMPRESSION_OFF,
+    auto_glz: Constants.SPICE_IMAGE_COMPRESSION_AUTO_GLZ,
+    auto_lz: Constants.SPICE_IMAGE_COMPRESSION_AUTO_LZ,
+    quic: Constants.SPICE_IMAGE_COMPRESSION_QUIC,
+    glz: Constants.SPICE_IMAGE_COMPRESSION_GLZ,
+    lz: Constants.SPICE_IMAGE_COMPRESSION_LZ,
+    lz4: Constants.SPICE_IMAGE_COMPRESSION_LZ4,
+};
+
+SpiceDisplayConn.prototype.send_preferred_compression = function()
+{
+    var want = this.parent ? this.parent.preferred_compression : undefined;
+    if (want === undefined || want === null)
+        return;
+    var value = typeof want == "string" ? IMAGE_COMPRESSION_BY_NAME[want.toLowerCase()] : want;
+    if (value === undefined || value < Constants.SPICE_IMAGE_COMPRESSION_OFF ||
+        value > Constants.SPICE_IMAGE_COMPRESSION_LZ4)
+    {
+        this.log_warn("Ignoring unknown preferred_compression: " + want);
+        return;
+    }
+    if (! this.reply_link ||
+        ! (this.reply_link.channel_caps[0] & (1 << Constants.SPICE_DISPLAY_CAP_PREF_COMPRESSION)))
+    {
+        this.log_info("Server does not take a preferred compression; keeping its default");
+        return;
+    }
+    var msg = new Messages.SpiceMiniData();
+    msg.build_msg(Constants.SPICE_MSGC_DISPLAY_PREFERRED_COMPRESSION,
+                  new Messages.SpiceMsgcDisplayPreferredCompression(value));
     this.send_msg(msg);
 }
 

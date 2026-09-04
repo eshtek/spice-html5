@@ -1,6 +1,7 @@
 /* Server-to-client message builders and client-to-server decoders. Each
    builder returns a complete mini-header message ready for the wire. */
 import { C } from "./constants.ts";
+import { lz4EncodeBlocks, spiceLz4Payload } from "./lz4.ts";
 import { type Clip, NO_CLIP, type Rect, Reader, Writer, mini } from "./wire.ts";
 
 /* ---------- common ---------- */
@@ -202,6 +203,39 @@ export function drawCopyBitmap(a: BitmapArgs) {
       .u32(width * 4)
       .u32(0)
       .bytes(a.pixels);
+  });
+}
+
+export interface Lz4Args extends DrawCopyBase {
+  /* Packed rows in the wire format's byte order (BGRx, BGRA, BGR or
+     x1r5g5b5), stride = width * bytes per pixel. */
+  pixels: Uint8Array;
+  imageWidth?: number;
+  imageHeight?: number;
+  topDown?: boolean;
+  format?: "32bit" | "rgba" | "24bit" | "16bit";
+  /* Rows per LZ4 block; the server's encoder cuts blocks where its
+     source bitmap's chunks end. Default: one block. */
+  blockRows?: number;
+  cacheId?: number;
+  cache?: boolean;
+}
+
+const LZ4_FORMATS = { "32bit": [C.SPICE_BITMAP_FMT_32BIT, 4], rgba: [C.SPICE_BITMAP_FMT_RGBA, 4], "24bit": [C.SPICE_BITMAP_FMT_24BIT, 3], "16bit": [C.SPICE_BITMAP_FMT_16BIT, 2] } as const;
+
+export function drawCopyLz4(a: Lz4Args) {
+  const width = a.imageWidth ?? a.box.right - a.box.left;
+  const height = a.imageHeight ?? a.box.bottom - a.box.top;
+  const [format, bpp] = LZ4_FORMATS[a.format ?? "32bit"];
+  if (a.pixels.length !== width * height * bpp) throw new Error("pixel buffer does not match image size");
+  const stride = width * bpp;
+  const rows = a.blockRows ?? height;
+  const sizes: number[] = [];
+  for (let y = 0; y < height; y += rows) sizes.push(Math.min(rows, height - y) * stride);
+  const payload = spiceLz4Payload(a.topDown !== false, format, lz4EncodeBlocks(a.pixels, sizes));
+  return drawCopyWith(a, (w) => {
+    imageDescriptor(w, a.cacheId ?? 0, C.SPICE_IMAGE_TYPE_LZ4, a.cache ? C.SPICE_IMAGE_FLAGS_CACHE_ME : 0, width, height);
+    w.u32(payload.length).bytes(payload);
   });
 }
 
@@ -423,6 +457,7 @@ const BY_CHANNEL: Record<number, Record<number, string>> = {
     [C.SPICE_MSGC_DISPLAY_INIT]: "display_init",
     [C.SPICE_MSGC_DISPLAY_STREAM_REPORT]: "stream_report",
     [C.SPICE_MSGC_DISPLAY_PREFERRED_VIDEO_CODEC_TYPE]: "preferred_video_codec_type",
+    [C.SPICE_MSGC_DISPLAY_PREFERRED_COMPRESSION]: "preferred_compression",
   },
   [C.SPICE_CHANNEL_INPUTS]: {
     [C.SPICE_MSGC_INPUTS_KEY_DOWN]: "key_down",
@@ -481,6 +516,9 @@ export function decodeClient(channelType: number, type: number, data: Uint8Array
       fields.pixmapCacheSize = Number(r.u64());
       fields.glzDictionaryId = r.u8();
       fields.glzWindowSize = r.u32();
+      break;
+    case "preferred_compression":
+      fields.compression = r.u8();
       break;
     case "preferred_video_codec_type": {
       const n = r.u8();

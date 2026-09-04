@@ -59,6 +59,13 @@ import { resize_helper, handle_resize } from './resize.js';
 **                                  to request a resize
 **          onsuccess   (optional)  If given, a function to be called when the
 **                                  session is successfully connected
+**          preferred_compression (optional)  Image compression to ask the
+**                                  server for on this connection, by name
+**                                  ("lz4", "auto_glz", "quic", "lz", ...) or
+**                                  SPICE_IMAGE_COMPRESSION_* value.  "lz4" trades
+**                                  bandwidth for far less decoding work; suited
+**                                  to a LAN, not a WAN.  Unset keeps the server's
+**                                  own setting.
 **
 **  Throws error if there are troubles.  Requires a modern (by 2012 standards)
 **      browser, including WebSocket and WebSocket.binaryType == arraybuffer
