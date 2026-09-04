@@ -289,6 +289,54 @@ test("profile: goldeye win11 replay", async ({ client, spice }) => {
   });
 });
 
+/* The bitmap burst through a shaped pipe: 20 Mbit/s and 150 ms, a LAN's
+   rate with a WAN's delay. Client cost per draw should not move; the
+   wall time is the pipe's. */
+test("100 bitmap draw copies of 128x128 over 20 Mbit/s at 150 ms", async ({ client, spice }) => {
+  await client.disconnect();
+  await spice.reset({ shape: { latencyMs: 150, jitterMs: 10, kbps: 20000, seed: 4 } });
+  await client.connectReady();
+  await spice.send("display", "surfaceCreate", { width: 640, height: 480 });
+  const cdp = await client.page.context().newCDPSession(client.page);
+  await cdp.send("Performance.enable");
+  const sample = await measure(
+    client.page,
+    cdp,
+    async () => {
+      await spice.run({ cmd: "drawBurst", args: { count: 100, size: 128, seed: 5 } });
+      await spice.send("display", "drawFill", { box: box(0, 0, 4, 4), color: 0xffffff });
+      await client.expectPixel(2, 2, [255, 255, 255], 8, 30_000);
+    },
+    () => client.counters(),
+  );
+  expect(sample.puts + sample.draws).toBeGreaterThanOrEqual(100);
+  record("bitmap-burst-100x128-shaped-20mbps-150ms", sample);
+});
+
+/* A stream that fits the link, but every frame pays 50 ms and up to 20 ms
+   of jitter: what the client does with late, uneven frames. */
+test("mjpeg 160x120 @30fps for 3s over 2 Mbit/s at 50 ms", async ({ client, spice }) => {
+  await client.disconnect();
+  await spice.reset({ shape: { latencyMs: 50, jitterMs: 20, kbps: 2000, seed: 8 } });
+  await client.connectReady();
+  await spice.send("display", "surfaceCreate", { width: 640, height: 480 });
+  const cdp = await client.page.context().newCDPSession(client.page);
+  await cdp.send("Performance.enable");
+  const sample = await measure(
+    client.page,
+    cdp,
+    async () => {
+      await spice.run({ cmd: "stream", args: { id: 0, frames: 90, fps: 30, width: 160, height: 120, destroy: true } });
+      await expect.poll(async () => (await spice.state()).connections.find((c) => c.channel === "display")?.shapedBytes, { timeout: 20_000 }).toBe(0);
+      await client.page.waitForTimeout(300);
+    },
+    () => client.counters(),
+  );
+  expect(sample.images).toBeGreaterThanOrEqual(80);
+  expect(sample.urlsLeaked).toBe(0);
+  record("mjpeg-160x120-30fps-3s-shaped-2mbps-50ms", sample);
+});
+
 test("20 connect/disconnect cycles hold the heap flat", async ({ client, spice }) => {
   const cdp = await client.page.context().newCDPSession(client.page);
   await cdp.send("Performance.enable");

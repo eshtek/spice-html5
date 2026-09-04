@@ -10,6 +10,7 @@ import { C, CHANNEL_TYPES, channelName } from "./constants.ts";
 import * as frames from "./frames.ts";
 import * as M from "./messages.ts";
 import { TicketKey } from "./rsa.ts";
+import { type ShapeConfig, Shaper } from "./shape.ts";
 import { type Clip, type Rect, Reader, Writer, concat, mini } from "./wire.ts";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
@@ -25,6 +26,8 @@ export interface ServerConfig {
   password: string;
   channels: Array<{ type: number; id: number }>;
   fragment: FragmentMode;
+  /* Latency, jitter and rate between server and client; null is loopback. */
+  shape: ShapeConfig | null;
   linkError: number;
   serverMagic: string;
   linkReplyDelayMs: number;
@@ -49,6 +52,7 @@ export const DEFAULT_CONFIG: ServerConfig = {
     { type: C.SPICE_CHANNEL_CURSOR, id: 0 },
   ],
   fragment: { kind: "whole" },
+  shape: null,
   linkError: 0,
   serverMagic: "REDQ",
   linkReplyDelayMs: 0,
@@ -84,6 +88,7 @@ interface Conn {
   bytesOut: number;
   coalesce: Uint8Array[];
   coalesceTimer: ReturnType<typeof setTimeout> | null;
+  shaper: Shaper | null;
   need: number;
 }
 
@@ -410,8 +415,10 @@ export class FakeSpiceServer {
       bytesOut: 0,
       coalesce: [],
       coalesceTimer: null,
+      shaper: null,
       need: 0,
     };
+    if (this.config.shape) conn.shaper = new Shaper(this.config.shape, (b) => this.deliver(conn, b));
     this.conns.set(conn.id, conn);
   }
 
@@ -429,6 +436,7 @@ export class FakeSpiceServer {
     if (conn.coalesceTimer) clearTimeout(conn.coalesceTimer);
     conn.coalesceTimer = null;
     conn.coalesce = [];
+    if (conn.shaper) conn.shaper.clear();
     this.conns.delete(conn.id);
     this.log.push(`${reason} ${channelName(conn.channelType)}:${conn.channelId}`);
     try {
@@ -625,8 +633,16 @@ export class FakeSpiceServer {
   /* sendBinary returns -1 when the message is queued behind backpressure
      and 0 when Bun refused it; a refusal is counted so a test can tell a
      fast client from a lossy socket. */
+  /* After fragmentation, bytes go down the shaped pipe when there is one
+     and straight to the socket otherwise. */
   private push(conn: Conn, bytes: Uint8Array) {
-    if (conn.ws.sendBinary(bytes) === 0 && conn.state !== "closed") conn.dropped++;
+    if (conn.shaper) conn.shaper.push(bytes);
+    else this.deliver(conn, bytes);
+  }
+
+  private deliver(conn: Conn, bytes: Uint8Array) {
+    if (conn.state === "closed") return;
+    if (conn.ws.sendBinary(bytes) === 0) conn.dropped++;
   }
 
   private sendRaw(conn: Conn, bytes: Uint8Array) {
@@ -882,7 +898,7 @@ export class FakeSpiceServer {
        The trailing drain means the burst has left the server when the
        control call returns. */
     const drained = async () => {
-      while (conn.state === "ready" && conn.ws.getBufferedAmount() > 0) await sleep(1);
+      while (conn.state === "ready" && (conn.ws.getBufferedAmount() > 0 || conn.shaper?.lineBusy())) await sleep(1);
     };
     for (let i = 0; i < a.count; i++) {
       await drained();
@@ -1028,6 +1044,7 @@ export class FakeSpiceServer {
         messagesOut: c.messagesOut,
         bytesOut: c.bytesOut,
         dropped: c.dropped,
+        shapedBytes: c.shaper?.pendingBytes ?? 0,
         channelCaps: c.channelCaps,
       })),
       log: this.log,
