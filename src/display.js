@@ -1019,7 +1019,7 @@ SpiceDisplayConn.prototype.process_channel_message = function(msg)
         {
             // FIXME - do brushes ever have alpha?
             var color = draw_fill.data.brush.color & 0xffffff;
-            var color_str = "rgb(" + (color >> 16) + ", " + ((color >> 8) & 0xff) + ", " + (color & 0xff) + ")";
+            var color_str = brush_color(draw_fill.data.brush);
             var fill_surface = this.surfaces[draw_fill.base.surface_id];
             /* On an alpha surface the brush is an alpha value, written in place. */
             var alpha_fill = fill_surface.format == Constants.SPICE_SURFACE_FMT_8_A;

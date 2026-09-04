@@ -238,7 +238,6 @@ function cursor_to_rgba(header, data)
     return null;
 }
 
-/* True if the shape was converted and applied. */
 /* A cursor from SET or INIT: none hides; from-cache looks the shape up
    by its id; otherwise the shape is converted, remembered when asked
    (Windows sends a shape on nearly every hover and then refers back to
@@ -294,15 +293,6 @@ function convert_cursor(cursor)
     var curstr = 'url(data:image/png,' + pngstr + ') ' +
         cursor.header.hot_spot_x + ' ' + cursor.header.hot_spot_y + ", default";
     return { curstr: curstr, pngstr: pngstr, cursor: cursor };
-}
-
-SpiceCursorConn.prototype.set_cursor = function(cursor)
-{
-    var shape = convert_cursor(cursor);
-    if (! shape)
-        return false;
-    this.show_cursor(shape);
-    return true;
 }
 
 SpiceCursorConn.prototype.show_cursor = function(shape)

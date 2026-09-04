@@ -395,15 +395,20 @@ SpiceCopy.prototype =
     },
 }
 
-/* An image reference: a u32 offset to a SpiceImage, or nothing. */
-function image_at(dv, at, mb)
+/* A reference: a u32 offset to a Ctor parsed from there, or nothing. */
+function ref_at(dv, at, mb, Ctor)
 {
     var offset = dv.getUint32(at, true);
     if (offset == 0)
         return null;
-    var image = new SpiceImage;
-    image.from_dv(dv, offset, mb);
-    return image;
+    var ref = new Ctor;
+    ref.from_dv(dv, offset, mb);
+    return ref;
+}
+
+function image_at(dv, at, mb)
+{
+    return ref_at(dv, at, mb, SpiceImage);
 }
 
 function SpiceOpaque()
@@ -525,14 +530,7 @@ SpiceAlphaBlend.prototype =
     {
         this.alpha_flags = dv.getUint8(at, true); at++;
         this.alpha = dv.getUint8(at, true); at++;
-        var offset = dv.getUint32(at, true); at += 4;
-        if (offset == 0)
-            this.src_bitmap = null;
-        else
-        {
-            this.src_bitmap = new SpiceImage;
-            this.src_bitmap.from_dv(dv, offset, mb);
-        }
+        this.src_bitmap = image_at(dv, at, mb); at += 4;
         this.src_area = new SpiceRect;
         return this.src_area.from_dv(dv, at, mb);
     },
@@ -597,14 +595,7 @@ SpiceText.prototype =
 {
     from_dv: function(dv, at, mb)
     {
-        var offset = dv.getUint32(at, true); at += 4;
-        if (offset == 0)
-            this.str = null;
-        else
-        {
-            this.str = new SpiceString;
-            this.str.from_dv(dv, offset, mb);
-        }
+        this.str = ref_at(dv, at, mb, SpiceString); at += 4;
         this.back_area = new SpiceRect;
         at = this.back_area.from_dv(dv, at, mb);
         this.fore_brush = new SpiceBrush;
@@ -673,14 +664,7 @@ SpiceStroke.prototype =
 {
     from_dv: function(dv, at, mb)
     {
-        var offset = dv.getUint32(at, true); at += 4;
-        if (offset == 0)
-            this.path = null;
-        else
-        {
-            this.path = new SpicePath;
-            this.path.from_dv(dv, offset, mb);
-        }
+        this.path = ref_at(dv, at, mb, SpicePath); at += 4;
         this.attr = new SpiceLineAttr;
         at = this.attr.from_dv(dv, at, mb);
         this.brush = new SpiceBrush;

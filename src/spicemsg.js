@@ -974,24 +974,6 @@ SpiceMsgDisplayDrawOpaque.prototype =
     },
 }
 
-function SpiceMsgDisplayDrawBlend(a, at)
-{
-    this.from_buffer(a, at);
-}
-
-SpiceMsgDisplayDrawBlend.prototype =
-{
-    from_buffer: function(a, at)
-    {
-        at = at || 0;
-        var dv = new DataView(a);
-        this.base = new SpiceMsgDisplayBase;
-        at = this.base.from_dv(dv, at, a);
-        this.data = new SpiceCopy;
-        return this.data.from_dv(dv, at, a);
-    },
-}
-
 function SpiceMsgDisplayDrawMaskOnly(a, at)
 {
     this.from_buffer(a, at);
@@ -1790,7 +1772,6 @@ export {
   SpiceMsgDisplayDrawText,
   SpiceMsgDisplayDrawStroke,
   SpiceMsgDisplayDrawOpaque,
-  SpiceMsgDisplayDrawBlend,
   SpiceMsgDisplayDrawMaskOnly,
   SpiceMsgDisplayDrawTransparent,
   SpiceMsgDisplayDrawRop3,
