@@ -104,6 +104,51 @@ function qmaskNone(w: Writer) {
   w.u8(0).point(0, 0).u32(0);
 }
 
+/* A 1-bit mask: rows top-down as strings, "#" where the op may draw,
+   written as a 1BIT bitmap image at the end of the payload through the
+   offset placeholder the caller patches. */
+export interface MaskArgs {
+  rows: string[];
+  x?: number;
+  y?: number;
+  invers?: boolean;
+  /* 1BIT_LE packs the first pixel in the low bit. */
+  le?: boolean;
+  topDown?: boolean;
+}
+
+function qmask(w: Writer, m: MaskArgs | undefined): number {
+  if (!m) {
+    qmaskNone(w);
+    return -1;
+  }
+  w.u8(m.invers ? C.SPICE_MASK_FLAGS_INVERS : 0).point(m.x ?? 0, m.y ?? 0);
+  return w.placeholderU32();
+}
+
+function maskImage(w: Writer, m: MaskArgs) {
+  const height = m.rows.length;
+  const width = m.rows[0].length;
+  const stride = (width + 7) >> 3;
+  imageDescriptor(w, 0, C.SPICE_IMAGE_TYPE_BITMAP, 0, width, height);
+  w.u8(m.le ? C.SPICE_BITMAP_FMT_1BIT_LE : C.SPICE_BITMAP_FMT_1BIT_BE)
+    .u8(m.topDown === false ? 0 : C.SPICE_BITMAP_FLAGS_TOP_DOWN)
+    .u32(width)
+    .u32(height)
+    .u32(stride)
+    .u32(0);
+  const order = m.topDown === false ? [...m.rows].reverse() : m.rows;
+  for (const row of order) {
+    const line = new Uint8Array(stride);
+    for (let x = 0; x < width; x++) if (row[x] === "#") line[x >> 3] |= m.le ? 1 << (x & 7) : 0x80 >> (x & 7);
+    w.bytes(line);
+  }
+}
+
+function brush(w: Writer, color: number) {
+  w.u8(C.SPICE_BRUSH_TYPE_SOLID).u32(color);
+}
+
 export interface SurfaceArgs {
   id?: number;
   width: number;
@@ -145,14 +190,32 @@ export interface DrawFillArgs {
   color: number; // 0xRRGGBB
   /* SPICE_ROPD_*; default OP_PUT. */
   ropd?: number;
+  mask?: MaskArgs;
 }
 
 export function drawFill(a: DrawFillArgs) {
   const w = new Writer();
   displayBase(w, a.surface ?? 0, a.box, a.clip ?? NO_CLIP);
   w.u8(C.SPICE_BRUSH_TYPE_SOLID).u32(a.color).u16(a.ropd ?? C.SPICE_ROPD_OP_PUT);
-  qmaskNone(w);
+  const maskOffset = qmask(w, a.mask);
+  if (a.mask) {
+    w.patchU32(maskOffset, w.length);
+    maskImage(w, a.mask);
+  }
   return mini(C.SPICE_MSG_DISPLAY_DRAW_FILL, w.toBytes());
+}
+
+/* Blackness, whiteness and invers: a box and an optional mask. */
+export function drawMaskOnly(a: { type: "blackness" | "whiteness" | "invers"; surface?: number; box: Rect; clip?: Clip; mask?: MaskArgs }) {
+  const w = new Writer();
+  displayBase(w, a.surface ?? 0, a.box, a.clip ?? NO_CLIP);
+  const maskOffset = qmask(w, a.mask);
+  if (a.mask) {
+    w.patchU32(maskOffset, w.length);
+    maskImage(w, a.mask);
+  }
+  const type = a.type === "blackness" ? C.SPICE_MSG_DISPLAY_DRAW_BLACKNESS : a.type === "whiteness" ? C.SPICE_MSG_DISPLAY_DRAW_WHITENESS : C.SPICE_MSG_DISPLAY_DRAW_INVERS;
+  return mini(type, w.toBytes());
 }
 
 /* SpiceCopy with the image placed at the end of the payload, where the
@@ -167,18 +230,123 @@ export interface DrawCopyBase {
   scaleMode?: number;
 }
 
-function drawCopyWith(a: DrawCopyBase, image: (w: Writer) => void) {
+function drawCopyWith(a: DrawCopyBase & { ropd?: number; mask?: MaskArgs }, image: (w: Writer) => void, type = C.SPICE_MSG_DISPLAY_DRAW_COPY) {
   const w = new Writer();
   displayBase(w, a.surface ?? 0, a.box, a.clip ?? NO_CLIP);
   const imageOffset = w.placeholderU32();
   const width = a.box.right - a.box.left;
   const height = a.box.bottom - a.box.top;
   w.rect(a.srcArea ?? { top: 0, left: 0, bottom: height, right: width });
-  w.u16(C.SPICE_ROPD_OP_PUT).u8(a.scaleMode ?? 0);
-  qmaskNone(w);
+  w.u16(a.ropd ?? C.SPICE_ROPD_OP_PUT).u8(a.scaleMode ?? 0);
+  const maskOffset = qmask(w, a.mask);
   w.patchU32(imageOffset, w.length);
   image(w);
-  return mini(C.SPICE_MSG_DISPLAY_DRAW_COPY, w.toBytes());
+  if (a.mask) {
+    w.patchU32(maskOffset, w.length);
+    maskImage(w, a.mask);
+  }
+  return mini(type, w.toBytes());
+}
+
+/* Source, brush, rop and mask, the shape Opaque and Rop3 share. */
+function brushedImage(a: BitmapArgs & { color: number }, ropBytes: (w: Writer) => void, type: number) {
+  const width = a.imageWidth ?? a.box.right - a.box.left;
+  const height = a.imageHeight ?? a.box.bottom - a.box.top;
+  const w = new Writer();
+  displayBase(w, a.surface ?? 0, a.box, a.clip ?? NO_CLIP);
+  const imageOffset = w.placeholderU32();
+  w.rect(a.srcArea ?? { top: 0, left: 0, bottom: a.box.bottom - a.box.top, right: a.box.right - a.box.left });
+  brush(w, a.color);
+  ropBytes(w);
+  w.u8(a.scaleMode ?? 0);
+  const maskOffset = qmask(w, a.mask);
+  w.patchU32(imageOffset, w.length);
+  bitmapImage(w, a, width, height);
+  if (a.mask) {
+    w.patchU32(maskOffset, w.length);
+    maskImage(w, a.mask);
+  }
+  return mini(type, w.toBytes());
+}
+
+/* DrawBlend: a copy whose rop combines source and destination. */
+export function drawBlendBitmap(a: BitmapArgs) {
+  const width = a.imageWidth ?? a.box.right - a.box.left;
+  const height = a.imageHeight ?? a.box.bottom - a.box.top;
+  return drawCopyWith(a, (w) => bitmapImage(w, a, width, height), C.SPICE_MSG_DISPLAY_DRAW_BLEND);
+}
+
+/* DrawOpaque: the source lands, then the brush is combined in by the rop. */
+export function drawOpaqueBitmap(a: BitmapArgs & { color: number }) {
+  return brushedImage(a, (w) => w.u16(a.ropd ?? C.SPICE_ROPD_OP_PUT), C.SPICE_MSG_DISPLAY_DRAW_OPAQUE);
+}
+
+/* DrawRop3: pattern (a solid brush here), source and destination. */
+export function drawRop3Bitmap(a: BitmapArgs & { color: number; rop3: number }) {
+  return brushedImage(a, (w) => w.u8(a.rop3), C.SPICE_MSG_DISPLAY_DRAW_ROP3);
+}
+
+/* DrawTransparent: a copy that skips pixels of trueColor. */
+export function drawTransparentBitmap(a: BitmapArgs & { trueColor: number; srcColor?: number }) {
+  const width = a.imageWidth ?? a.box.right - a.box.left;
+  const height = a.imageHeight ?? a.box.bottom - a.box.top;
+  const w = new Writer();
+  displayBase(w, a.surface ?? 0, a.box, a.clip ?? NO_CLIP);
+  const imageOffset = w.placeholderU32();
+  w.rect(a.srcArea ?? { top: 0, left: 0, bottom: a.box.bottom - a.box.top, right: a.box.right - a.box.left });
+  w.u32(a.srcColor ?? a.trueColor).u32(a.trueColor);
+  w.patchU32(imageOffset, w.length);
+  bitmapImage(w, a, width, height);
+  return mini(C.SPICE_MSG_DISPLAY_DRAW_TRANSPARENT, w.toBytes());
+}
+
+/* DrawComposite with bitmap operands; op is a Render PictOp code. */
+export interface CompositeArgs {
+  surface?: number;
+  box: Rect;
+  clip?: Clip;
+  op: number;
+  src: BitmapArgs;
+  mask?: BitmapArgs;
+  srcOrigin?: [number, number];
+  maskOrigin?: [number, number];
+  /* 2x3 affine, Render's dest-to-source mapping. */
+  srcTransform?: number[];
+  maskTransform?: number[];
+  srcRepeat?: number;
+  srcFilter?: number;
+  maskFilter?: number;
+}
+
+export function drawComposite(a: CompositeArgs) {
+  const w = new Writer();
+  displayBase(w, a.surface ?? 0, a.box, a.clip ?? NO_CLIP);
+  let flags = a.op & 0xff;
+  flags |= (a.srcFilter ?? 0) << 8;
+  flags |= (a.maskFilter ?? 0) << 11;
+  flags |= (a.srcRepeat ?? 0) << 14;
+  if (a.mask) flags |= C.SPICE_COMPOSITE_HAS_MASK;
+  if (a.srcTransform) flags |= C.SPICE_COMPOSITE_HAS_SRC_TRANSFORM;
+  if (a.maskTransform) flags |= C.SPICE_COMPOSITE_HAS_MASK_TRANSFORM;
+  w.u32(flags);
+  const srcOffset = w.placeholderU32();
+  const maskOffset = a.mask ? w.placeholderU32() : -1;
+  for (const t of [a.srcTransform, a.maskTransform]) if (t) for (const v of t) w.u32(Math.round(v * 65536));
+  w.u16((a.srcOrigin?.[0] ?? 0) & 0xffff).u16((a.srcOrigin?.[1] ?? 0) & 0xffff);
+  w.u16((a.maskOrigin?.[0] ?? 0) & 0xffff).u16((a.maskOrigin?.[1] ?? 0) & 0xffff);
+  const width = a.box.right - a.box.left;
+  const height = a.box.bottom - a.box.top;
+  w.patchU32(srcOffset, w.length);
+  bitmapImage(w, a.src, a.src.imageWidth ?? width, a.src.imageHeight ?? height);
+  if (a.mask) {
+    w.patchU32(maskOffset, w.length);
+    bitmapImage(w, a.mask, a.mask.imageWidth ?? width, a.mask.imageHeight ?? height);
+  }
+  return mini(C.SPICE_MSG_DISPLAY_DRAW_COMPOSITE, w.toBytes());
+}
+
+export function invalPalette(id: number | bigint) {
+  return mini(C.SPICE_MSG_DISPLAY_INVAL_PALETTE, new Writer().u64(id).toBytes());
 }
 
 function imageDescriptor(w: Writer, id: number | bigint, type: number, flags: number, width: number, height: number) {
@@ -192,22 +360,54 @@ export interface BitmapArgs extends DrawCopyBase {
   imageWidth?: number;
   imageHeight?: number;
   topDown?: boolean;
-  /* RGBA carries the fourth byte as real alpha; the default 32BIT ignores it. */
-  format?: "32bit" | "rgba";
+  /* RGBA carries the fourth byte as real alpha; the default 32BIT ignores it.
+     The palettised, 16 and 24 bit forms take rows in the wire layout. */
+  format?: "32bit" | "rgba" | "24bit" | "16bit" | "8bit" | "4bit-be" | "4bit-le" | "1bit-be" | "1bit-le" | "8bit-a";
+  /* Packed xRGB entries for the palettised formats. */
+  palette?: number[];
+  paletteId?: number;
+  paletteCache?: boolean;
+  paletteFromCache?: boolean;
   cacheId?: number;
   cache?: boolean;
+  /* Rop descriptor for DrawCopy/DrawBlend/DrawOpaque; default OP_PUT. */
+  ropd?: number;
+  mask?: MaskArgs;
 }
 
+const BITMAP_FORMATS: Record<NonNullable<BitmapArgs["format"]>, [number, number]> = {
+  "32bit": [C.SPICE_BITMAP_FMT_32BIT, 32],
+  rgba: [C.SPICE_BITMAP_FMT_RGBA, 32],
+  "24bit": [C.SPICE_BITMAP_FMT_24BIT, 24],
+  "16bit": [C.SPICE_BITMAP_FMT_16BIT, 16],
+  "8bit": [C.SPICE_BITMAP_FMT_8BIT, 8],
+  "4bit-be": [C.SPICE_BITMAP_FMT_4BIT_BE, 4],
+  "4bit-le": [C.SPICE_BITMAP_FMT_4BIT_LE, 4],
+  "1bit-be": [C.SPICE_BITMAP_FMT_1BIT_BE, 1],
+  "1bit-le": [C.SPICE_BITMAP_FMT_1BIT_LE, 1],
+  "8bit-a": [C.SPICE_BITMAP_FMT_8BIT_A, 8],
+};
+
 function bitmapImage(w: Writer, a: BitmapArgs, width: number, height: number) {
-  if (a.pixels.length !== width * height * 4) throw new Error("pixel buffer does not match image size");
+  const [format, bpp] = BITMAP_FORMATS[a.format ?? "32bit"];
+  const stride = (width * bpp + 7) >> 3;
+  if (a.pixels.length !== stride * height) throw new Error(`pixel buffer does not match image size (${a.pixels.length} vs ${stride * height})`);
   imageDescriptor(w, a.cacheId ?? 0, C.SPICE_IMAGE_TYPE_BITMAP, a.cache ? C.SPICE_IMAGE_FLAGS_CACHE_ME : 0, width, height);
-  w.u8(a.format === "rgba" ? C.SPICE_BITMAP_FMT_RGBA : C.SPICE_BITMAP_FMT_32BIT)
-    .u8(a.topDown === false ? 0 : C.SPICE_BITMAP_FLAGS_TOP_DOWN)
-    .u32(width)
-    .u32(height)
-    .u32(width * 4)
-    .u32(0)
-    .bytes(a.pixels);
+  let flags = a.topDown === false ? 0 : C.SPICE_BITMAP_FLAGS_TOP_DOWN;
+  if (a.paletteCache) flags |= C.SPICE_BITMAP_FLAGS_PAL_CACHE_ME;
+  if (a.paletteFromCache) flags |= C.SPICE_BITMAP_FLAGS_PAL_FROM_CACHE;
+  w.u8(format).u8(flags).u32(width).u32(height).u32(stride);
+  if (a.paletteFromCache) {
+    w.u64(a.paletteId ?? 0).bytes(a.pixels);
+  } else if (a.palette) {
+    const paletteOffset = w.placeholderU32();
+    w.bytes(a.pixels);
+    w.patchU32(paletteOffset, w.length);
+    w.u64(a.paletteId ?? 0).u16(a.palette.length);
+    for (const e of a.palette) w.u32(e);
+  } else {
+    w.u32(0).bytes(a.pixels);
+  }
 }
 
 export function drawCopyBitmap(a: BitmapArgs) {
@@ -506,8 +706,9 @@ export interface CursorShape {
   hotX?: number;
   hotY?: number;
   unique?: number;
-  /* ALPHA cursors carry BGRA pixels; MONO carries AND then XOR 1bpp planes. */
-  data: Uint8Array;
+  /* ALPHA cursors carry BGRA pixels; MONO carries AND then XOR 1bpp planes.
+     Absent for a FROM_CACHE reference. */
+  data?: Uint8Array;
 }
 
 function cursorBody(w: Writer, shape: CursorShape | null, flags = 0) {
@@ -522,19 +723,29 @@ function cursorBody(w: Writer, shape: CursorShape | null, flags = 0) {
     .u16(shape.height)
     .u16(shape.hotX ?? 0)
     .u16(shape.hotY ?? 0)
-    .bytes(shape.data);
+    .bytes(shape.data ?? new Uint8Array(0));
 }
 
-export function cursorInit(a: { x?: number; y?: number; visible?: boolean; shape?: CursorShape | null } = {}) {
+export function cursorInit(a: { x?: number; y?: number; visible?: boolean; shape?: CursorShape | null; flags?: number } = {}) {
   const w = new Writer().point16(a.x ?? 0, a.y ?? 0).u16(0).u16(0).u8(a.visible === false ? 0 : 1);
-  cursorBody(w, a.shape ?? null);
+  cursorBody(w, a.shape ?? null, a.flags ?? 0);
   return mini(C.SPICE_MSG_CURSOR_INIT, w.toBytes());
 }
 
-export function cursorSet(a: { x?: number; y?: number; visible?: boolean; shape: CursorShape | null }) {
+/* flags: SPICE_CURSOR_FLAGS_CACHE_ME remembers the shape under its unique
+   id; FROM_CACHE sends the header alone and refers back to it. */
+export function cursorSet(a: { x?: number; y?: number; visible?: boolean; shape: CursorShape | null; flags?: number }) {
   const w = new Writer().point16(a.x ?? 0, a.y ?? 0).u8(a.visible === false ? 0 : 1);
-  cursorBody(w, a.shape);
+  cursorBody(w, a.shape, a.flags ?? 0);
   return mini(C.SPICE_MSG_CURSOR_SET, w.toBytes());
+}
+
+export function cursorInvalOne(id: number | bigint) {
+  return mini(C.SPICE_MSG_CURSOR_INVAL_ONE, new Writer().u64(id).toBytes());
+}
+
+export function cursorInvalAll() {
+  return mini(C.SPICE_MSG_CURSOR_INVAL_ALL);
 }
 
 export function cursorMove(x: number, y: number) {

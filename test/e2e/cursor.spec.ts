@@ -54,3 +54,30 @@ test("cursor move is accepted silently in client mouse mode", async ({ client, s
   await expect.poll(() => screenCursor(client)).toBe("none");
   expect((await client.messages()).filter((m) => /Unknown message|not implemented/i.test(m))).toEqual([]);
 });
+
+test("a shape flagged CACHE_ME is reused FROM_CACHE and dropped by INVAL_ONE", async ({ client, spice }) => {
+  await spice.send("cursor", "cursorSet", { flags: 2, shape: { unique: 42, width: 16, height: 16, hotX: 3, hotY: 5, image: { kind: "quadrants", width: 16, height: 16 } } });
+  await expect.poll(() => screenCursor(client)).toMatch(/^url\("?data:image\/png/);
+  const cached = await screenCursor(client);
+  await spice.send("cursor", "cursorSet", { shape: { unique: 43, width: 8, height: 8, image: { kind: "solid", width: 8, height: 8, color: [255, 0, 0] } } });
+  await expect.poll(() => screenCursor(client)).not.toBe(cached);
+  await spice.send("cursor", "cursorSet", { flags: 4, shape: { unique: 42, width: 16, height: 16, hotX: 3, hotY: 5 } });
+  await expect.poll(() => screenCursor(client)).toBe(cached);
+  await spice.send("cursor", "cursorInvalOne", { id: 42 });
+  await spice.send("cursor", "cursorSet", { flags: 4, shape: { unique: 42, width: 16, height: 16 } });
+  await expect.poll(() => client.messages()).toContainEqual(expect.stringMatching(/cursor 42 not in cache/));
+  expect((await client.messages()).filter((m) => /No support for cursor flags/.test(m))).toEqual([]);
+});
+
+test("INVAL_ALL empties the cache", async ({ client, spice }) => {
+  await spice.send("cursor", "cursorSet", { flags: 2, shape: { unique: 7, width: 8, height: 8, image: { kind: "solid", width: 8, height: 8, color: [0, 255, 0] } } });
+  await expect.poll(() => screenCursor(client)).toMatch(/^url\("?data:image\/png/);
+  await spice.send("cursor", "cursorInvalAll");
+  await spice.send("cursor", "cursorSet", { flags: 4, shape: { unique: 7, width: 8, height: 8 } });
+  await expect.poll(() => client.messages()).toContainEqual(expect.stringMatching(/cursor 7 not in cache/));
+});
+
+test("a cursor delivered with INIT is shown", async ({ client, spice }) => {
+  await spice.send("cursor", "cursorInit", { x: 5, y: 5, shape: { unique: 9, width: 8, height: 8, image: { kind: "solid", width: 8, height: 8, color: [0, 0, 255] } } });
+  await expect.poll(() => screenCursor(client)).toMatch(/^url\("?data:image\/png/);
+});

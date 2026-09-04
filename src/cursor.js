@@ -24,6 +24,7 @@ import { DEBUG } from './utils.js';
 import {
   SpiceMsgCursorInit,
   SpiceMsgCursorMove,
+  SpiceMsgCursorInvalOne,
   SpiceMsgCursorSet,
 } from './spicemsg.js';
 import { SpiceSimulateCursor } from './simulatecursor.js';
@@ -55,7 +56,10 @@ SpiceCursorConn.prototype.process_channel_message = function(msg)
             this.parent.inputs.mousex = cursor_init.position.x;
             this.parent.inputs.mousey = cursor_init.position.y;
         }
-        // FIXME - We don't handle most of the parameters here...
+        /* INIT with no shape leaves the pointer as it is; only a SET
+           of none hides it. */
+        if (cursor_init.cursor && ! (cursor_init.cursor.flags & Constants.SPICE_CURSOR_FLAGS_NONE))
+            this.handle_cursor(cursor_init.cursor, cursor_init.visible);
         return true;
     }
 
@@ -63,21 +67,7 @@ SpiceCursorConn.prototype.process_channel_message = function(msg)
     {
         var cursor_set = new SpiceMsgCursorSet(msg.data);
         DEBUG > 1 && console.log("SpiceMsgCursorSet");
-        if (cursor_set.cursor.flags & Constants.SPICE_CURSOR_FLAGS_NONE)
-        {
-            this.hide_cursor();
-            return true;
-        }
-
-        if (cursor_set.cursor.flags > 0)
-            this.log_warn("FIXME: No support for cursor flags " + cursor_set.cursor.flags);
-
-        /* An unconvertible shape is not an unhandled message: returning
-           false here made the base class log a second, misleading
-           "Unknown message type 103" for every one of these. */
-        if (! this.set_cursor(cursor_set.cursor))
-            this.warn_once_per_cursor_type(cursor_set.cursor.header.type);
-
+        this.handle_cursor(cursor_set.cursor, cursor_set.visible);
         return true;
     }
 
@@ -120,14 +110,16 @@ SpiceCursorConn.prototype.process_channel_message = function(msg)
 
     if (msg.type == Constants.SPICE_MSG_CURSOR_INVAL_ONE)
     {
-        this.known_unimplemented(msg.type, "Cursor Inval One");
+        var inval = new SpiceMsgCursorInvalOne(msg.data);
+        if (this.cursor_cache)
+            delete this.cursor_cache[String(inval.id)];
         return true;
     }
 
     if (msg.type == Constants.SPICE_MSG_CURSOR_INVAL_ALL)
     {
         DEBUG > 1 && console.log("SpiceMsgCursorInvalAll");
-        // FIXME - There may be something useful to do here...
+        this.cursor_cache = undefined;
         return true;
     }
 
@@ -247,15 +239,75 @@ function cursor_to_rgba(header, data)
 }
 
 /* True if the shape was converted and applied. */
-SpiceCursorConn.prototype.set_cursor = function(cursor)
+/* A cursor from SET or INIT: none hides; from-cache looks the shape up
+   by its id; otherwise the shape is converted, remembered when asked
+   (Windows sends a shape on nearly every hover and then refers back to
+   it), and shown.  An unconvertible shape is not an unhandled message:
+   returning false made the base class log a misleading "Unknown message
+   type" for every one of these. */
+SpiceCursorConn.prototype.handle_cursor = function(cursor, visible)
+{
+    if (cursor.flags & Constants.SPICE_CURSOR_FLAGS_NONE)
+    {
+        this.hide_cursor();
+        return;
+    }
+    var shape;
+    var id = String(cursor.header.unique);
+    if (cursor.flags & Constants.SPICE_CURSOR_FLAGS_FROM_CACHE)
+    {
+        shape = this.cursor_cache ? this.cursor_cache[id] : undefined;
+        if (! shape)
+        {
+            this.log_warn("FIXME: cursor " + id + " not in cache");
+            return;
+        }
+    }
+    else
+    {
+        shape = convert_cursor(cursor);
+        if (! shape)
+        {
+            this.warn_once_per_cursor_type(cursor.header.type);
+            return;
+        }
+        if (cursor.flags & Constants.SPICE_CURSOR_FLAGS_CACHE_ME)
+        {
+            if (! this.cursor_cache)
+                this.cursor_cache = {};
+            this.cursor_cache[id] = shape;
+        }
+    }
+    if (visible === 0)
+        this.hide_cursor();
+    else
+        this.show_cursor(shape);
+}
+
+/* The CSS and PNG for a shape, or undefined for a type not converted. */
+function convert_cursor(cursor)
 {
     var rgba = cursor_to_rgba(cursor.header, cursor.data);
     if (! rgba)
-        return false;
-
+        return undefined;
     var pngstr = create_rgba_png(cursor.header.width, cursor.header.height, rgba);
     var curstr = 'url(data:image/png,' + pngstr + ') ' +
         cursor.header.hot_spot_x + ' ' + cursor.header.hot_spot_y + ", default";
+    return { curstr: curstr, pngstr: pngstr, cursor: cursor };
+}
+
+SpiceCursorConn.prototype.set_cursor = function(cursor)
+{
+    var shape = convert_cursor(cursor);
+    if (! shape)
+        return false;
+    this.show_cursor(shape);
+    return true;
+}
+
+SpiceCursorConn.prototype.show_cursor = function(shape)
+{
+    var curstr = shape.curstr, pngstr = shape.pngstr, cursor = shape.cursor;
     var screen = document.getElementById(this.parent.screen_id);
     screen.style.cursor = 'auto';
     screen.style.cursor = curstr;
@@ -269,8 +321,6 @@ SpiceCursorConn.prototype.set_cursor = function(cursor)
            cursor forever. */
         this.remove_simulated_cursor();
     }
-
-    return true;
 }
 
 /* A hidden pointer is hidden whichever way the last shape was shown:

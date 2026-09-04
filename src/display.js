@@ -27,7 +27,7 @@ import { Constants } from './enums.js';
 import { SpiceConn } from './spiceconn.js';
 import { SpiceRect } from './spicetype.js';
 import { convert_spice_lz_to_web } from './lz.js';
-import { convert_spice_bitmap_to_web } from './bitmap.js';
+import { convert_spice_bitmap_to_web, convert_spice_mask } from './bitmap.js';
 import { convert_spice_lz4_to_web } from './lz4.js';
 import { VideoCodecs, video_decoder_codec, video_keyframe } from './videocodecs.js';
 
@@ -293,6 +293,198 @@ function render_string_mask(str, color)
     return { image_data: image_data, left: left, top: top, width: w, height: h };
 }
 
+/*----------------------------------------------------------------------------
+**  Raster ops.  A rop descriptor names an operation and which operands
+**  to invert; canvas_base resolves it to one of sixteen binary ops given
+**  which two inputs (source, brush, destination) it combines.  The ops
+**  run on bytes, one channel at a time, so they work on whatever the
+**  canvas hands back.
+**--------------------------------------------------------------------------*/
+var ROP = { COPY: 0, COPY_INVERTED: 1, AND: 2, AND_REVERSE: 3, AND_INVERTED: 4, OR: 5, OR_REVERSE: 6,
+            OR_INVERTED: 7, XOR: 8, EQUIV: 9, NOR: 10, NAND: 11, INVERT: 12, CLEAR: 13, SET: 14, NOOP: 15 };
+var ROP_INPUT_SRC = 0, ROP_INPUT_BRUSH = 1, ROP_INPUT_DEST = 2;
+
+function ropd_to_rop(desc, src_input, dest_input)
+{
+    var invert_masks = [ Constants.SPICE_ROPD_INVERS_SRC, Constants.SPICE_ROPD_INVERS_BRUSH, Constants.SPICE_ROPD_INVERS_DEST ];
+    var inv_src = !!(desc & invert_masks[src_input]);
+    var inv_dest = !!(desc & invert_masks[dest_input]);
+    var inv_res = !!(desc & Constants.SPICE_ROPD_INVERS_RES);
+    if (desc & Constants.SPICE_ROPD_OP_PUT)
+        return (inv_src != inv_res) ? ROP.COPY_INVERTED : ROP.COPY;
+    if (desc & Constants.SPICE_ROPD_OP_OR)
+    {
+        if (inv_res)
+            return inv_src ? (inv_dest ? ROP.AND : ROP.AND_REVERSE) : (inv_dest ? ROP.AND_INVERTED : ROP.NOR);
+        return inv_src ? (inv_dest ? ROP.NAND : ROP.OR_INVERTED) : (inv_dest ? ROP.OR_REVERSE : ROP.OR);
+    }
+    if (desc & Constants.SPICE_ROPD_OP_AND)
+    {
+        if (inv_res)
+            return inv_src ? (inv_dest ? ROP.OR : ROP.OR_REVERSE) : (inv_dest ? ROP.OR_INVERTED : ROP.NAND);
+        return inv_src ? (inv_dest ? ROP.NOR : ROP.AND_INVERTED) : (inv_dest ? ROP.AND_REVERSE : ROP.AND);
+    }
+    if (desc & Constants.SPICE_ROPD_OP_XOR)
+        return (inv_src != inv_dest) != inv_res ? ROP.EQUIV : ROP.XOR;
+    if (desc & Constants.SPICE_ROPD_OP_BLACKNESS)
+        return inv_res ? ROP.SET : ROP.CLEAR;
+    if (desc & Constants.SPICE_ROPD_OP_WHITENESS)
+        return inv_res ? ROP.CLEAR : ROP.SET;
+    if (desc & Constants.SPICE_ROPD_OP_INVERS)
+        return inv_res ? ROP.NOOP : ROP.INVERT;
+    return ROP.NOOP;
+}
+
+function rop_apply(rop, s, d)
+{
+    switch (rop)
+    {
+        case ROP.COPY: return s;
+        case ROP.COPY_INVERTED: return ~s & 0xff;
+        case ROP.AND: return s & d;
+        case ROP.AND_REVERSE: return s & ~d & 0xff;
+        case ROP.AND_INVERTED: return ~s & d & 0xff;
+        case ROP.OR: return s | d;
+        case ROP.OR_REVERSE: return (s | ~d) & 0xff;
+        case ROP.OR_INVERTED: return (~s | d) & 0xff;
+        case ROP.XOR: return s ^ d;
+        case ROP.EQUIV: return ~(s ^ d) & 0xff;
+        case ROP.NOR: return ~(s | d) & 0xff;
+        case ROP.NAND: return ~(s & d) & 0xff;
+        case ROP.INVERT: return ~d & 0xff;
+        case ROP.CLEAR: return 0;
+        case ROP.SET: return 0xff;
+    }
+    return d;
+}
+
+/* A Windows ternary rop: bit (p, s, d) of the code says what a bit of
+   pattern, source and destination becomes. */
+function rop3_apply(code, p, s, d)
+{
+    var r = 0;
+    for (var bit = 1; bit < 256; bit <<= 1)
+    {
+        var idx = ((p & bit) ? 4 : 0) | ((s & bit) ? 2 : 0) | ((d & bit) ? 1 : 0);
+        if (code & (1 << idx))
+            r |= bit;
+    }
+    return r;
+}
+
+/* Runs fn(sr, sg, sb, dr, dg, db, out, o) over the pixels of `rects`
+   (the parts of `box` a draw may touch) and writes out[o..o+2] back.
+   Source pixels come from source.image_data at the position matching
+   the destination pixel through source.src (its src_area) when there
+   is a source; mask.bits, offset by mask.pos, excludes pixels. */
+function combine_rects(context, box, rects, source, mask, fn)
+{
+    var s_data = source ? source.image_data.data : null;
+    var s_w = source ? source.image_data.width : 0;
+    var s_left = source ? source.src.left : 0;
+    var s_top = source ? source.src.top : 0;
+    for (var i = 0; i < rects.length; i++)
+    {
+        var r = rects[i];
+        var w = r.right - r.left, h = r.bottom - r.top;
+        var d = context.getImageData(r.left, r.top, w, h);
+        var out = d.data;
+        for (var y = 0; y < h; y++)
+        {
+            for (var x = 0; x < w; x++)
+            {
+                var px = r.left + x, py = r.top + y;
+                if (mask)
+                {
+                    var mx = px - box.left + mask.pos.x, my = py - box.top + mask.pos.y;
+                    if (mx < 0 || my < 0 || mx >= mask.width || my >= mask.height || ! mask.bits[my * mask.width + mx])
+                        continue;
+                }
+                var o = (y * w + x) * 4;
+                var so = source ? ((py - box.top + s_top) * s_w + (px - box.left + s_left)) * 4 : 0;
+                fn(source ? s_data[so] : 0, source ? s_data[so + 1] : 0, source ? s_data[so + 2] : 0,
+                   out[o], out[o + 1], out[o + 2], out, o);
+            }
+        }
+        context.putImageData(d, r.left, r.top);
+    }
+}
+
+/* Render's PictOp codes as canvas blend modes; "clear" and "dst" are
+   special-cased by the caller, saturate is approximated by add. */
+var COMPOSITE_OPS = {};
+COMPOSITE_OPS[Constants.SPICE_COMPOSITE_OP_CLEAR] = "clear";
+COMPOSITE_OPS[Constants.SPICE_COMPOSITE_OP_SRC] = "copy";
+COMPOSITE_OPS[Constants.SPICE_COMPOSITE_OP_DST] = "dst";
+COMPOSITE_OPS[Constants.SPICE_COMPOSITE_OP_OVER] = "source-over";
+COMPOSITE_OPS[Constants.SPICE_COMPOSITE_OP_OVER_REVERSE] = "destination-over";
+COMPOSITE_OPS[Constants.SPICE_COMPOSITE_OP_IN] = "source-in";
+COMPOSITE_OPS[Constants.SPICE_COMPOSITE_OP_IN_REVERSE] = "destination-in";
+COMPOSITE_OPS[Constants.SPICE_COMPOSITE_OP_OUT] = "source-out";
+COMPOSITE_OPS[Constants.SPICE_COMPOSITE_OP_OUT_REVERSE] = "destination-out";
+COMPOSITE_OPS[Constants.SPICE_COMPOSITE_OP_ATOP] = "source-atop";
+COMPOSITE_OPS[Constants.SPICE_COMPOSITE_OP_ATOP_REVERSE] = "destination-atop";
+COMPOSITE_OPS[Constants.SPICE_COMPOSITE_OP_XOR] = "xor";
+COMPOSITE_OPS[Constants.SPICE_COMPOSITE_OP_ADD] = "lighter";
+COMPOSITE_OPS[Constants.SPICE_COMPOSITE_OP_SATURATE] = "lighter";
+
+/* A composite operand rendered onto a fresh canvas the size of the
+   destination box.  Render samples the operand at transform * (dest +
+   origin); the canvas maps operand to destination, so it gets the
+   inverse.  Repeat 1 tiles; filter 0 is nearest. */
+function composite_layer(image_data, origin, transform, repeat, filter, w, h)
+{
+    var layer = document.createElement("canvas");
+    layer.width = w;
+    layer.height = h;
+    var ctx = layer.getContext("2d");
+    var operand = document.createElement("canvas");
+    operand.width = image_data.width;
+    operand.height = image_data.height;
+    operand.getContext("2d").putImageData(image_data, 0, 0);
+    ctx.imageSmoothingEnabled = filter != 0;
+    var t = transform || [1, 0, 0, 0, 1, 0];
+    /* t maps (x + ox, y + oy) to operand space: [t0 t1 t2; t3 t4 t5]. */
+    var det = t[0] * t[4] - t[1] * t[3];
+    if (! det)
+        return layer;
+    var ia = t[4] / det, ib = -t[3] / det, ic = -t[1] / det, id = t[0] / det;
+    var ie = -(ia * t[2] + ic * t[5]) - origin.x;
+    var iff = -(ib * t[2] + id * t[5]) - origin.y;
+    ctx.setTransform(ia, ib, ic, id, ie, iff);
+    if (repeat == 1)
+    {
+        ctx.fillStyle = ctx.createPattern(operand, "repeat");
+        var reach = Math.max(w, h, image_data.width, image_data.height) * 4;
+        ctx.fillRect(-reach, -reach, reach * 2, reach * 2);
+    }
+    else
+        ctx.drawImage(operand, 0, 0);
+    return layer;
+}
+
+/* The source of a draw as an image the size of its box: the src_area
+   scaled when the sizes differ, so combine_rects can read it 1:1. */
+function source_for_box(image_data, src, box)
+{
+    var w = box.right - box.left, h = box.bottom - box.top;
+    var sw = src.right - src.left, sh = src.bottom - src.top;
+    if (sw == w && sh == h)
+        return { image_data: image_data, src: src };
+    if (scratch_canvas === null)
+    {
+        scratch_canvas = document.createElement("canvas");
+        scratch_context = scratch_canvas.getContext("2d");
+    }
+    if (scratch_canvas.width < Math.max(w, image_data.width))
+        scratch_canvas.width = Math.max(w, image_data.width);
+    if (scratch_canvas.height < Math.max(h, image_data.height))
+        scratch_canvas.height = Math.max(h, image_data.height);
+    scratch_context.putImageData(image_data, 0, 0);
+    scratch_context.drawImage(scratch_canvas, src.left, src.top, sw, sh, 0, image_data.height, w, h);
+    return { image_data: scratch_context.getImageData(0, image_data.height, w, h), src: { left: 0, top: 0, right: w, bottom: h } };
+}
+
 /* JPEG frames used to be turned into percent-encoded data: URIs one byte at
    a time — an O(n) string build per frame that dominated MJPEG playback.
    A Blob URL hands the bytes to the decoder directly; it must be revoked
@@ -505,18 +697,17 @@ SpiceDisplayConn.prototype.process_channel_message = function(msg)
         return true;
     }
 
-    if (msg.type == Constants.SPICE_MSG_DISPLAY_DRAW_COPY)
+    if (msg.type == Constants.SPICE_MSG_DISPLAY_DRAW_COPY || msg.type == Constants.SPICE_MSG_DISPLAY_DRAW_BLEND)
     {
+        /* Blend is a copy with a rop between source and destination. */
         var draw_copy = new Messages.SpiceMsgDisplayDrawCopy(msg.data);
 
         Utils.DEBUG > 1 && this.log_draw("DrawCopy", draw_copy);
 
-        if (draw_copy.data.rop_descriptor != Constants.SPICE_ROPD_OP_PUT)
-            this.log_warn("FIXME: DrawCopy we don't handle ropd type: " + draw_copy.data.rop_descriptor);
-        if (draw_copy.data.mask.flags)
-            this.log_warn("FIXME: DrawCopy we don't handle mask flag: " + draw_copy.data.mask.flags);
-        if (draw_copy.data.mask.bitmap)
-            this.log_warn("FIXME: DrawCopy we don't handle mask");
+        var copy_rop = ropd_to_rop(draw_copy.data.rop_descriptor, ROP_INPUT_SRC, ROP_INPUT_DEST);
+        if (copy_rop == ROP.NOOP)
+            return true;
+        this.copy_extras = { rop: copy_rop, mask: this.decode_mask("DrawCopy", draw_copy.data.mask) };
 
         if (draw_copy.data && draw_copy.data.src_bitmap)
         {
@@ -678,7 +869,8 @@ SpiceDisplayConn.prototype.process_channel_message = function(msg)
                 }
 
                 var source_img = convert_spice_bitmap_to_web(canvas.context,
-                                        draw_copy.data.src_bitmap.bitmap);
+                                        draw_copy.data.src_bitmap.bitmap,
+                                        this.bitmap_palette(draw_copy.data.src_bitmap.bitmap));
                 if (! source_img)
                 {
                     this.log_warn("FIXME: Unable to interpret bitmap of format: " +
@@ -691,7 +883,8 @@ SpiceDisplayConn.prototype.process_channel_message = function(msg)
                       src_area: draw_copy.data.src_area,
                       image_data: source_img,
                       tag: "bitmap." + draw_copy.data.src_bitmap.bitmap.format,
-                      has_alpha: draw_copy.data.src_bitmap.bitmap.format != Constants.SPICE_BITMAP_FMT_32BIT,
+                      has_alpha: draw_copy.data.src_bitmap.bitmap.format == Constants.SPICE_BITMAP_FMT_RGBA ||
+                                 draw_copy.data.src_bitmap.bitmap.format == Constants.SPICE_BITMAP_FMT_8BIT_A,
                       descriptor : draw_copy.data.src_bitmap.descriptor,
                       scale_mode : draw_copy.data.scale_mode
                     });
@@ -719,7 +912,8 @@ SpiceDisplayConn.prototype.process_channel_message = function(msg)
                       src_area: draw_copy.data.src_area,
                       image_data: source_img,
                       tag: "lz_rgb." + draw_copy.data.src_bitmap.lz_rgb.type,
-                      has_alpha: draw_copy.data.src_bitmap.lz_rgb.type == Constants.LZ_IMAGE_TYPE_RGBA ? true : false ,
+                      has_alpha: draw_copy.data.src_bitmap.lz_rgb.type == Constants.LZ_IMAGE_TYPE_RGBA ||
+                                 draw_copy.data.src_bitmap.lz_rgb.type == Constants.LZ_IMAGE_TYPE_A8,
                       descriptor : draw_copy.data.src_bitmap.descriptor,
                       scale_mode : draw_copy.data.scale_mode
                     });
@@ -776,13 +970,10 @@ SpiceDisplayConn.prototype.process_channel_message = function(msg)
         if (fill_rop != Constants.SPICE_ROPD_OP_PUT && fill_rop != Constants.SPICE_ROPD_OP_XOR &&
             fill_rop != Constants.SPICE_ROPD_OP_BLACKNESS && fill_rop != Constants.SPICE_ROPD_OP_WHITENESS)
             this.log_warn("FIXME: DrawFill we don't handle ropd type: " + draw_fill.data.rop_descriptor);
-        if (draw_fill.data.mask.flags)
-            this.log_warn("FIXME: DrawFill we don't handle mask flag: " + draw_fill.data.mask.flags);
-        if (draw_fill.data.mask.bitmap)
-            this.log_warn("FIXME: DrawFill we don't handle mask");
+        var fill_mask = this.decode_mask("DrawFill", draw_fill.data.mask);
 
         if (fill_rop == Constants.SPICE_ROPD_OP_BLACKNESS || fill_rop == Constants.SPICE_ROPD_OP_WHITENESS ||
-            (draw_fill.data.brush.type == Constants.SPICE_BRUSH_TYPE_SOLID && fill_rop == Constants.SPICE_ROPD_OP_XOR))
+            (draw_fill.data.brush.type == Constants.SPICE_BRUSH_TYPE_SOLID && (fill_rop == Constants.SPICE_ROPD_OP_XOR || fill_mask)))
         {
             /* Blackness and whiteness ignore the brush; xor inverts the
                destination through it (a white brush is the caret). */
@@ -795,6 +986,19 @@ SpiceDisplayConn.prototype.process_channel_message = function(msg)
                     return;
                 var rects = clipped_rects(draw_fill.base.box, draw_fill.base.clip);
                 var ctx = rop_surface.canvas.context;
+                if (fill_mask)
+                {
+                    var mr = (rop_color >> 16) & 0xff, mg = (rop_color >> 8) & 0xff, mb = rop_color & 0xff;
+                    var xor = fill_rop == Constants.SPICE_ROPD_OP_XOR;
+                    combine_rects(ctx, draw_fill.base.box, rects, null, fill_mask, function(sr, sg, sb, dr, dg, db, out, at)
+                    {
+                        out[at] = xor ? dr ^ mr : mr;
+                        out[at + 1] = xor ? dg ^ mg : mg;
+                        out[at + 2] = xor ? db ^ mb : mb;
+                    });
+                    rop_surface.draw_count++;
+                    return;
+                }
                 for (var i = 0; i < rects.length; i++)
                 {
                     if (fill_rop == Constants.SPICE_ROPD_OP_XOR)
@@ -814,13 +1018,22 @@ SpiceDisplayConn.prototype.process_channel_message = function(msg)
             var color = draw_fill.data.brush.color & 0xffffff;
             var color_str = "rgb(" + (color >> 16) + ", " + ((color >> 8) & 0xff) + ", " + (color & 0xff) + ")";
             var fill_surface = this.surfaces[draw_fill.base.surface_id];
+            /* On an alpha surface the brush is an alpha value, written in place. */
+            var alpha_fill = fill_surface.format == Constants.SPICE_SURFACE_FMT_8_A;
 
             this.enqueue(function()
             {
                 if (! this.surface_live(fill_surface))
                     return;
                 var fill_context = fill_surface.canvas.context;
-                fill_context.fillStyle = color_str;
+                fill_context.save();
+                if (alpha_fill)
+                {
+                    fill_context.globalCompositeOperation = "copy";
+                    fill_context.fillStyle = "rgba(0, 0, 0, " + ((color & 0xff) / 255) + ")";
+                }
+                else
+                    fill_context.fillStyle = color_str;
 
                 with_clip(fill_context, draw_fill.base.clip, function()
                 {
@@ -829,6 +1042,7 @@ SpiceDisplayConn.prototype.process_channel_message = function(msg)
                         draw_fill.base.box.right - draw_fill.base.box.left,
                         draw_fill.base.box.bottom - draw_fill.base.box.top);
                 });
+                fill_context.restore();
 
                 if (Utils.DUMP_DRAWS && this.parent.dump_id)
                 {
@@ -857,37 +1071,124 @@ SpiceDisplayConn.prototype.process_channel_message = function(msg)
 
     if (msg.type == Constants.SPICE_MSG_DISPLAY_DRAW_OPAQUE)
     {
-        this.known_unimplemented(msg.type, "Display Draw Opaque");
+        /* The source lands, then the brush is combined into it by the rop. */
+        var opaque = new Messages.SpiceMsgDisplayDrawOpaque(msg.data);
+        Utils.DEBUG > 1 && this.log_draw("DrawOpaque", opaque);
+        if (! opaque.data.src_bitmap)
+        {
+            this.log_warn("FIXME: DrawOpaque no src_bitmap.");
+            return false;
+        }
+        if (opaque.data.brush.type != Constants.SPICE_BRUSH_TYPE_SOLID)
+        {
+            this.log_warn("FIXME: DrawOpaque can't handle brush type: " + opaque.data.brush.type);
+            return false;
+        }
+        var opaque_rop = ropd_to_rop(opaque.data.rop_descriptor, ROP_INPUT_BRUSH, ROP_INPUT_SRC);
+        if (opaque_rop == ROP.NOOP)
+            return true;
+        var opaque_surface = this.surfaces[opaque.base.surface_id];
+        var opaque_source = this.resolve_source_image("DrawOpaque", opaque.data.src_bitmap, opaque_surface.canvas, opaque.data.src_area);
+        if (! opaque_source)
+            return false;
+        var opaque_mask = this.decode_mask("DrawOpaque", opaque.data.mask);
+        var br = (opaque.data.brush.color >> 16) & 0xff, bg = (opaque.data.brush.color >> 8) & 0xff, bb = opaque.data.brush.color & 0xff;
+        this.enqueue(function()
+        {
+            if (! this.surface_live(opaque_surface))
+                return;
+            var image_data = opaque_source.image_data || (opaque_source.resolve ? opaque_source.resolve() : undefined);
+            if (! image_data)
+                return;
+            var src = opaque_source.whole ? { left: 0, top: 0, right: image_data.width, bottom: image_data.height } : opaque.data.src_area;
+            combine_rects(opaque_surface.canvas.context, opaque.base.box, clipped_rects(opaque.base.box, opaque.base.clip),
+                          source_for_box(image_data, src, opaque.base.box), opaque_mask,
+                          function(sr, sg, sb, dr, dg, db, out, at)
+                          {
+                              out[at] = rop_apply(opaque_rop, br, sr);
+                              out[at + 1] = rop_apply(opaque_rop, bg, sg);
+                              out[at + 2] = rop_apply(opaque_rop, bb, sb);
+                          });
+            opaque_surface.draw_count++;
+        });
         return true;
     }
 
-    if (msg.type == Constants.SPICE_MSG_DISPLAY_DRAW_BLEND)
+    if (msg.type == Constants.SPICE_MSG_DISPLAY_DRAW_BLACKNESS ||
+        msg.type == Constants.SPICE_MSG_DISPLAY_DRAW_WHITENESS ||
+        msg.type == Constants.SPICE_MSG_DISPLAY_DRAW_INVERS)
     {
-        this.known_unimplemented(msg.type, "Display Draw Blend");
-        return true;
-    }
-
-    if (msg.type == Constants.SPICE_MSG_DISPLAY_DRAW_BLACKNESS)
-    {
-        this.known_unimplemented(msg.type, "Display Draw Blackness");
-        return true;
-    }
-
-    if (msg.type == Constants.SPICE_MSG_DISPLAY_DRAW_WHITENESS)
-    {
-        this.known_unimplemented(msg.type, "Display Draw Whiteness");
-        return true;
-    }
-
-    if (msg.type == Constants.SPICE_MSG_DISPLAY_DRAW_INVERS)
-    {
-        this.known_unimplemented(msg.type, "Display Draw Invers");
+        var plain = new Messages.SpiceMsgDisplayDrawMaskOnly(msg.data);
+        var plain_type = msg.type;
+        var plain_surface = this.surfaces[plain.base.surface_id];
+        var plain_mask = this.decode_mask("DrawBlackness", plain.data.mask);
+        this.enqueue(function()
+        {
+            if (! this.surface_live(plain_surface))
+                return;
+            var ctx = plain_surface.canvas.context;
+            var rects = clipped_rects(plain.base.box, plain.base.clip);
+            if (! plain_mask && plain_type != Constants.SPICE_MSG_DISPLAY_DRAW_INVERS)
+            {
+                ctx.fillStyle = plain_type == Constants.SPICE_MSG_DISPLAY_DRAW_WHITENESS ? "#ffffff" : "#000000";
+                for (var i = 0; i < rects.length; i++)
+                    ctx.fillRect(rects[i].left, rects[i].top, rects[i].right - rects[i].left, rects[i].bottom - rects[i].top);
+            }
+            else
+            {
+                var v = plain_type == Constants.SPICE_MSG_DISPLAY_DRAW_WHITENESS ? 255 : 0;
+                var invert = plain_type == Constants.SPICE_MSG_DISPLAY_DRAW_INVERS;
+                combine_rects(ctx, plain.base.box, rects, null, plain_mask, function(sr, sg, sb, dr, dg, db, out, at)
+                {
+                    out[at] = invert ? 255 - dr : v;
+                    out[at + 1] = invert ? 255 - dg : v;
+                    out[at + 2] = invert ? 255 - db : v;
+                });
+            }
+            plain_surface.draw_count++;
+        });
         return true;
     }
 
     if (msg.type == Constants.SPICE_MSG_DISPLAY_DRAW_ROP3)
     {
-        this.known_unimplemented(msg.type, "Display Draw ROP3");
+        var rop3 = new Messages.SpiceMsgDisplayDrawRop3(msg.data);
+        Utils.DEBUG > 1 && this.log_draw("DrawRop3", rop3);
+        if (! rop3.data.src_bitmap)
+        {
+            this.log_warn("FIXME: DrawRop3 no src_bitmap.");
+            return false;
+        }
+        if (rop3.data.brush.type != Constants.SPICE_BRUSH_TYPE_SOLID)
+        {
+            this.log_warn("FIXME: DrawRop3 can't handle brush type: " + rop3.data.brush.type);
+            return false;
+        }
+        var rop3_surface = this.surfaces[rop3.base.surface_id];
+        var rop3_source = this.resolve_source_image("DrawRop3", rop3.data.src_bitmap, rop3_surface.canvas, rop3.data.src_area);
+        if (! rop3_source)
+            return false;
+        var rop3_mask = this.decode_mask("DrawRop3", rop3.data.mask);
+        var code = rop3.data.rop3;
+        var pr = (rop3.data.brush.color >> 16) & 0xff, pg = (rop3.data.brush.color >> 8) & 0xff, pb = rop3.data.brush.color & 0xff;
+        this.enqueue(function()
+        {
+            if (! this.surface_live(rop3_surface))
+                return;
+            var image_data = rop3_source.image_data || (rop3_source.resolve ? rop3_source.resolve() : undefined);
+            if (! image_data)
+                return;
+            var src = rop3_source.whole ? { left: 0, top: 0, right: image_data.width, bottom: image_data.height } : rop3.data.src_area;
+            combine_rects(rop3_surface.canvas.context, rop3.base.box, clipped_rects(rop3.base.box, rop3.base.clip),
+                          source_for_box(image_data, src, rop3.base.box), rop3_mask,
+                          function(sr, sg, sb, dr, dg, db, out, at)
+                          {
+                              out[at] = rop3_apply(code, pr, sr, dr);
+                              out[at + 1] = rop3_apply(code, pg, sg, dg);
+                              out[at + 2] = rop3_apply(code, pb, sb, db);
+                          });
+            rop3_surface.draw_count++;
+        });
         return true;
     }
 
@@ -998,7 +1299,39 @@ SpiceDisplayConn.prototype.process_channel_message = function(msg)
 
     if (msg.type == Constants.SPICE_MSG_DISPLAY_DRAW_TRANSPARENT)
     {
-        this.known_unimplemented(msg.type, "Display Draw Transparent");
+        /* A copy that skips pixels of the key colour. */
+        var transparent = new Messages.SpiceMsgDisplayDrawTransparent(msg.data);
+        Utils.DEBUG > 1 && this.log_draw("DrawTransparent", transparent);
+        if (! transparent.data.src_bitmap)
+        {
+            this.log_warn("FIXME: DrawTransparent no src_bitmap.");
+            return false;
+        }
+        var tr_surface = this.surfaces[transparent.base.surface_id];
+        var tr_source = this.resolve_source_image("DrawTransparent", transparent.data.src_bitmap, tr_surface.canvas, transparent.data.src_area);
+        if (! tr_source)
+            return false;
+        var key = transparent.data.true_color & 0xffffff;
+        this.enqueue(function()
+        {
+            if (! this.surface_live(tr_surface))
+                return;
+            var image_data = tr_source.image_data || (tr_source.resolve ? tr_source.resolve() : undefined);
+            if (! image_data)
+                return;
+            var keyed = new ImageData(new Uint8ClampedArray(image_data.data), image_data.width, image_data.height);
+            var p = keyed.data;
+            for (var i = 0; i < p.length; i += 4)
+                p[i + 3] = ((p[i] << 16) | (p[i + 1] << 8) | p[i + 2]) == key ? 0 : 255;
+            var box = transparent.base.box;
+            var src = tr_source.whole ? { left: 0, top: 0, right: keyed.width, bottom: keyed.height } : transparent.data.src_area;
+            var ctx = tr_surface.canvas.context;
+            with_clip(ctx, transparent.base.clip, function()
+            {
+                putImageDataWithAlpha(ctx, keyed, box.left, box.top, src, box.right - box.left, box.bottom - box.top);
+            });
+            tr_surface.draw_count++;
+        });
         return true;
     }
 
@@ -1096,16 +1429,15 @@ SpiceDisplayConn.prototype.process_channel_message = function(msg)
 
     if (msg.type == Constants.SPICE_MSG_DISPLAY_INVAL_PALETTE)
     {
-        this.known_unimplemented(msg.type, "Display Inval Palette");
+        var inval = new Messages.SpiceMsgDisplayInvalPalette(msg.data);
+        if (this.palette_cache)
+            delete this.palette_cache[String(inval.id)];
         return true;
     }
 
     if (msg.type == Constants.SPICE_MSG_DISPLAY_INVAL_ALL_PALETTES)
     {
-        /* Drops the client's palette cache. This client has no such
-           cache -- a palettised image carries its palette with it and
-           is converted on arrival -- so there is nothing to drop.
-           Nothing to do, and not a gap in the implementation. */
+        this.palette_cache = undefined;
         return true;
     }
 
@@ -1120,7 +1452,8 @@ SpiceDisplayConn.prototype.process_channel_message = function(msg)
                                     + "; format " + m.surface.format
                                     + "; flags " + m.surface.flags);
         if (m.surface.format != Constants.SPICE_SURFACE_FMT_32_xRGB &&
-            m.surface.format != Constants.SPICE_SURFACE_FMT_32_ARGB)
+            m.surface.format != Constants.SPICE_SURFACE_FMT_32_ARGB &&
+            m.surface.format != Constants.SPICE_SURFACE_FMT_8_A)
         {
             this.log_warn("FIXME: cannot handle surface format " + m.surface.format + " yet.");
             return false;
@@ -1313,7 +1646,9 @@ SpiceDisplayConn.prototype.process_channel_message = function(msg)
 
     if (msg.type == Constants.SPICE_MSG_DISPLAY_STREAM_DESTROY_ALL)
     {
-        this.known_unimplemented(msg.type, "Display Stream Destroy All");
+        for (var sid in this.streams)
+            if (this.streams[sid])
+                this.destroy_stream(sid);
         return true;
     }
 
@@ -1336,7 +1671,86 @@ SpiceDisplayConn.prototype.process_channel_message = function(msg)
 
     if (msg.type == Constants.SPICE_MSG_DISPLAY_DRAW_COMPOSITE)
     {
-        this.known_unimplemented(msg.type, "Display Draw Composite");
+        var composite = new Messages.SpiceMsgDisplayDrawComposite(msg.data);
+        Utils.DEBUG > 1 && this.log_draw("DrawComposite", composite);
+        if (! composite.data.src_bitmap)
+        {
+            this.log_warn("FIXME: DrawComposite no src_bitmap.");
+            return false;
+        }
+        var comp_surface = this.surfaces[composite.base.surface_id];
+        var comp_box = composite.base.box;
+        var comp_w = comp_box.right - comp_box.left, comp_h = comp_box.bottom - comp_box.top;
+        var comp_area = { left: 0, top: 0, right: comp_w, bottom: comp_h };
+        /* A surface operand is read at its origin, so the layer starts at 0. */
+        var origin_area = function(o) { return { left: o.x, top: o.y, right: o.x + comp_w, bottom: o.y + comp_h }; };
+        var src_is_surface = composite.data.src_bitmap.descriptor.type == Constants.SPICE_IMAGE_TYPE_SURFACE;
+        var comp_src = this.resolve_source_image("DrawComposite", composite.data.src_bitmap, comp_surface.canvas,
+                                                 src_is_surface ? origin_area(composite.data.src_origin) : comp_area);
+        if (! comp_src)
+            return false;
+        var src_origin = src_is_surface ? { x: 0, y: 0 } : composite.data.src_origin;
+        var comp_mask = null;
+        var mask_origin = composite.data.mask_origin;
+        if (composite.data.mask_bitmap)
+        {
+            var mask_is_surface = composite.data.mask_bitmap.descriptor.type == Constants.SPICE_IMAGE_TYPE_SURFACE;
+            comp_mask = this.resolve_source_image("DrawComposite mask", composite.data.mask_bitmap, comp_surface.canvas,
+                                                  mask_is_surface ? origin_area(mask_origin) : comp_area);
+            if (! comp_mask)
+                return false;
+            if (mask_is_surface)
+                mask_origin = { x: 0, y: 0 };
+        }
+        var op = COMPOSITE_OPS[composite.data.flags & Constants.SPICE_COMPOSITE_OP_MASK];
+        if (op === undefined)
+        {
+            this.log_warn("FIXME: DrawComposite op " + (composite.data.flags & Constants.SPICE_COMPOSITE_OP_MASK) + " not handled");
+            return false;
+        }
+        var comp_data = composite.data;
+        this.enqueue(function()
+        {
+            if (! this.surface_live(comp_surface))
+                return;
+            var src_image = comp_src.image_data || (comp_src.resolve ? comp_src.resolve() : undefined);
+            if (! src_image)
+                return;
+            var w = comp_area.right, h = comp_area.bottom;
+            var layer = composite_layer(src_image, src_origin, comp_data.src_transform,
+                                        (comp_data.flags >> Constants.SPICE_COMPOSITE_SRC_REPEAT_SHIFT) & 3,
+                                        (comp_data.flags >> Constants.SPICE_COMPOSITE_SRC_FILTER_SHIFT) & 7, w, h);
+            if (comp_mask)
+            {
+                var mask_image = comp_mask.image_data || (comp_mask.resolve ? comp_mask.resolve() : undefined);
+                if (mask_image)
+                {
+                    var mask_layer = composite_layer(mask_image, mask_origin, comp_data.mask_transform,
+                                                     (comp_data.flags >> Constants.SPICE_COMPOSITE_MASK_REPEAT_SHIFT) & 3,
+                                                     (comp_data.flags >> Constants.SPICE_COMPOSITE_MASK_FILTER_SHIFT) & 7, w, h);
+                    var lctx = layer.getContext("2d");
+                    lctx.globalCompositeOperation = "destination-in";
+                    lctx.drawImage(mask_layer, 0, 0);
+                    lctx.globalCompositeOperation = "source-over";
+                }
+            }
+            var ctx = comp_surface.canvas.context;
+            ctx.save();
+            ctx.beginPath();
+            var rects = clipped_rects(comp_box, composite.base.clip);
+            for (var i = 0; i < rects.length; i++)
+                ctx.rect(rects[i].left, rects[i].top, rects[i].right - rects[i].left, rects[i].bottom - rects[i].top);
+            ctx.clip();
+            if (op == "clear")
+                ctx.clearRect(comp_box.left, comp_box.top, w, h);
+            else if (op != "dst")
+            {
+                ctx.globalCompositeOperation = op;
+                ctx.drawImage(layer, comp_box.left, comp_box.top);
+            }
+            ctx.restore();
+            comp_surface.draw_count++;
+        });
         return true;
     }
 
@@ -1366,6 +1780,47 @@ SpiceDisplayConn.prototype.delete_surface = function(surface_id)
    read covers src_area, so `whole` says to use all of it), or undefined
    with a warning.  A cacheable image goes into the cache now, as
    draw_copy_helper does. */
+/* The palette a palettised bitmap wants: its own, remembered when it
+   asks, or one remembered earlier. */
+SpiceDisplayConn.prototype.bitmap_palette = function(bitmap)
+{
+    if (bitmap.flags & Constants.SPICE_BITMAP_FLAGS_PAL_FROM_CACHE)
+    {
+        var ents = this.palette_cache ? this.palette_cache[String(bitmap.palette_id)] : undefined;
+        if (! ents)
+            this.log_warn("FIXME: palette " + bitmap.palette_id + " not in cache");
+        return ents;
+    }
+    if (! bitmap.palette)
+        return undefined;
+    if (bitmap.flags & Constants.SPICE_BITMAP_FLAGS_PAL_CACHE_ME)
+    {
+        if (! this.palette_cache)
+            this.palette_cache = {};
+        this.palette_cache[String(bitmap.palette.unique)] = bitmap.palette.ents;
+    }
+    return bitmap.palette.ents;
+}
+
+/* A draw's mask as { bits, width, height, pos }, or undefined when there
+   is none or it is not a 1-bit bitmap. */
+SpiceDisplayConn.prototype.decode_mask = function(tag, qmask)
+{
+    if (! qmask || ! qmask.bitmap)
+        return undefined;
+    var image = qmask.bitmap;
+    var mask = image.descriptor.type == Constants.SPICE_IMAGE_TYPE_BITMAP && image.bitmap ?
+               convert_spice_mask(image.bitmap, qmask.flags & Constants.SPICE_MASK_FLAGS_INVERS) : undefined;
+    if (! mask)
+    {
+        this.log_warn("FIXME: " + tag + " mask of image type " + image.descriptor.type +
+                      (image.bitmap ? " format " + image.bitmap.format : "") + " not handled");
+        return undefined;
+    }
+    mask.pos = qmask.pos;
+    return mask;
+}
+
 SpiceDisplayConn.prototype.resolve_source_image = function(tag, image, canvas, src_area)
 {
     var d = image.descriptor;
@@ -1380,7 +1835,7 @@ SpiceDisplayConn.prototype.resolve_source_image = function(tag, image, canvas, s
             break;
         case Constants.SPICE_IMAGE_TYPE_BITMAP:
             if (image.bitmap)
-                out = { image_data: convert_spice_bitmap_to_web(canvas.context, image.bitmap) };
+                out = { image_data: convert_spice_bitmap_to_web(canvas.context, image.bitmap, this.bitmap_palette(image.bitmap)) };
             break;
         case Constants.SPICE_IMAGE_TYPE_LZ_RGB:
             if (image.lz_rgb)
@@ -1428,6 +1883,12 @@ SpiceDisplayConn.prototype.resolve_source_image = function(tag, image, canvas, s
 SpiceDisplayConn.prototype.draw_copy_helper = function(o)
 {
     o.surface = this.surfaces[o.base.surface_id];
+    if (this.copy_extras)
+    {
+        o.rop = this.copy_extras.rop;
+        o.mask = this.copy_extras.mask;
+        this.copy_extras = undefined;
+    }
 
     /* FIXME - This is based on trial + error, not a serious thoughtful
                analysis of what Spice requires.  See display.js for more. */
@@ -1470,10 +1931,31 @@ SpiceDisplayConn.prototype.draw_copy_now = function(o)
     if (o.opaque && o.has_alpha)
         stripAlpha(image_data);
 
+    /* A rop other than copy, or a mask, means combining with what is
+       there, pixel by pixel. */
+    if ((o.rop !== undefined && o.rop != ROP.COPY) || o.mask)
+    {
+        var rop = o.rop === undefined ? ROP.COPY : o.rop;
+        combine_rects(canvas.context, o.base.box, clipped_rects(o.base.box, o.base.clip),
+                      source_for_box(image_data, src, o.base.box), o.mask,
+                      function(sr, sg, sb, dr, dg, db, out, at)
+                      {
+                          out[at] = rop_apply(rop, sr, dr);
+                          out[at + 1] = rop_apply(rop, sg, dg);
+                          out[at + 2] = rop_apply(rop, sb, db);
+                      });
+        o.surface.draw_count++;
+        return;
+    }
+
     /* src_area picks the part of the image that lands in the box, and a
        box of another size scales it. putImageData can offset but not
        scale, so a scaled draw goes through drawImage, which needs the
        alpha bytes made opaque above to copy rather than blend. */
+    /* An alpha surface takes the image as it is, alpha included; drawing
+       it through drawImage would blend over what is there. */
+    var replace = o.opaque || o.surface.format == Constants.SPICE_SURFACE_FMT_8_A;
+
     if (scaled)
     {
         canvas.context.imageSmoothingEnabled = o.scale_mode != Constants.SPICE_IMAGE_SCALE_MODE_NEAREST;
@@ -1485,7 +1967,7 @@ SpiceDisplayConn.prototype.draw_copy_now = function(o)
     }
     else if (is_clipped(o.base.clip))
     {
-        if (o.opaque)
+        if (replace)
             putImageDataClipped(canvas.context, image_data, left, top, o.base.clip, src);
         else
             with_clip(canvas.context, o.base.clip, function()
@@ -1493,7 +1975,7 @@ SpiceDisplayConn.prototype.draw_copy_now = function(o)
                 putImageDataWithAlpha(canvas.context, image_data, left, top, src, width, height);
             });
     }
-    else if (o.opaque)
+    else if (replace)
         canvas.context.putImageData(image_data, left - src.left, top - src.top, src.left, src.top, width, height);
     else
         putImageDataWithAlpha(canvas.context, image_data, left, top, src, width, height);

@@ -177,6 +177,16 @@ function convert_spice_lz_to_web(context, lz_image)
         var ret = context.createImageData(lz_image.width, lz_image.height);
         lz_rgb32_decompress(u8, 0, ret.data, Constants.LZ_IMAGE_TYPE_RGBA, false);
     }
+    else if (lz_image.type === Constants.LZ_IMAGE_TYPE_A8)
+    {
+        /* Alpha alone, a byte a pixel: the same stream the RGBA form
+           carries after its colour pass.  Glyph masks come this way. */
+        var u8 = new Uint8Array(lz_image.data);
+        var ret = context.createImageData(lz_image.width, lz_image.height);
+        lz_rgb32_decompress(u8, 0, ret.data, Constants.LZ_IMAGE_TYPE_RGBA, false);
+        if (!lz_image.top_down)
+            flip_image_data(ret);
+    }
     else
         return undefined;
 

@@ -395,6 +395,126 @@ SpiceCopy.prototype =
     },
 }
 
+/* An image reference: a u32 offset to a SpiceImage, or nothing. */
+function image_at(dv, at, mb)
+{
+    var offset = dv.getUint32(at, true);
+    if (offset == 0)
+        return null;
+    var image = new SpiceImage;
+    image.from_dv(dv, offset, mb);
+    return image;
+}
+
+function SpiceOpaque()
+{
+}
+
+SpiceOpaque.prototype =
+{
+    from_dv: function(dv, at, mb)
+    {
+        this.src_bitmap = image_at(dv, at, mb); at += 4;
+        this.src_area = new SpiceRect;
+        at = this.src_area.from_dv(dv, at, mb);
+        this.brush = new SpiceBrush;
+        at = this.brush.from_dv(dv, at, mb);
+        this.rop_descriptor = dv.getUint16(at, true); at += 2;
+        this.scale_mode = dv.getUint8(at, true); at++;
+        this.mask = new SpiceQMask;
+        return this.mask.from_dv(dv, at, mb);
+    },
+}
+
+/* Blackness, whiteness and invers carry only a mask. */
+function SpiceMaskOnly()
+{
+}
+
+SpiceMaskOnly.prototype =
+{
+    from_dv: function(dv, at, mb)
+    {
+        this.mask = new SpiceQMask;
+        return this.mask.from_dv(dv, at, mb);
+    },
+}
+
+function SpiceTransparent()
+{
+}
+
+SpiceTransparent.prototype =
+{
+    from_dv: function(dv, at, mb)
+    {
+        this.src_bitmap = image_at(dv, at, mb); at += 4;
+        this.src_area = new SpiceRect;
+        at = this.src_area.from_dv(dv, at, mb);
+        this.src_color = dv.getUint32(at, true); at += 4;
+        this.true_color = dv.getUint32(at, true); at += 4;
+        return at;
+    },
+}
+
+function SpiceRop3()
+{
+}
+
+SpiceRop3.prototype =
+{
+    from_dv: function(dv, at, mb)
+    {
+        this.src_bitmap = image_at(dv, at, mb); at += 4;
+        this.src_area = new SpiceRect;
+        at = this.src_area.from_dv(dv, at, mb);
+        this.brush = new SpiceBrush;
+        at = this.brush.from_dv(dv, at, mb);
+        this.rop3 = dv.getUint8(at, true); at++;
+        this.scale_mode = dv.getUint8(at, true); at++;
+        this.mask = new SpiceQMask;
+        return this.mask.from_dv(dv, at, mb);
+    },
+}
+
+/* A Render transform: a 3x3 matrix in 16.16 fixed point, last row implied. */
+function transform_at(dv, at)
+{
+    var t = [];
+    for (var i = 0; i < 6; i++)
+        t.push(dv.getInt32(at + i * 4, true) / 65536);
+    return t;
+}
+
+function SpiceComposite()
+{
+}
+
+SpiceComposite.prototype =
+{
+    from_dv: function(dv, at, mb)
+    {
+        this.flags = dv.getUint32(at, true); at += 4;
+        this.src_bitmap = image_at(dv, at, mb); at += 4;
+        this.mask_bitmap = null;
+        if (this.flags & Constants.SPICE_COMPOSITE_HAS_MASK)
+        {
+            this.mask_bitmap = image_at(dv, at, mb); at += 4;
+        }
+        if (this.flags & Constants.SPICE_COMPOSITE_HAS_SRC_TRANSFORM)
+        {
+            this.src_transform = transform_at(dv, at); at += 24;
+        }
+        if (this.flags & Constants.SPICE_COMPOSITE_HAS_MASK_TRANSFORM)
+        {
+            this.mask_transform = transform_at(dv, at); at += 24;
+        }
+        this.src_origin = { x: dv.getInt16(at, true), y: dv.getInt16(at + 2, true) }; at += 4;
+        this.mask_origin = { x: dv.getInt16(at, true), y: dv.getInt16(at + 2, true) }; at += 4;
+        return at;
+    },
+}
+
 function SpiceAlphaBlend()
 {
 }
@@ -674,6 +794,11 @@ export {
   SpiceFill,
   SpiceCopy,
   SpiceAlphaBlend,
+  SpiceOpaque,
+  SpiceMaskOnly,
+  SpiceTransparent,
+  SpiceRop3,
+  SpiceComposite,
   SpiceString,
   SpiceText,
   SpicePath,

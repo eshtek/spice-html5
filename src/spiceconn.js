@@ -202,6 +202,8 @@ SpiceConn.prototype =
                         (1 << Constants.SPICE_DISPLAY_CAP_STREAM_REPORT) |
                         (1 << Constants.SPICE_DISPLAY_CAP_MULTI_CODEC) |
                         (1 << Constants.SPICE_DISPLAY_CAP_LZ4_COMPRESSION) |
+                        (1 << Constants.SPICE_DISPLAY_CAP_COMPOSITE) |
+                        (1 << Constants.SPICE_DISPLAY_CAP_A8_SURFACE) |
                         (1 << Constants.SPICE_DISPLAY_CAP_CODEC_MJPEG);
             /* VP8 plays through a VideoDecoder when the browser has one,
                else through MediaSource; H.264 and VP9 need the decoder. */

@@ -40,6 +40,11 @@ import {
   SpiceAlphaBlend,
   SpiceText,
   SpiceStroke,
+  SpiceOpaque,
+  SpiceMaskOnly,
+  SpiceTransparent,
+  SpiceRop3,
+  SpiceComposite,
 } from './spicetype.js';
 import {
   keycode_to_start_scan,
@@ -951,6 +956,122 @@ SpiceMsgDisplayDrawStroke.prototype =
     },
 }
 
+function SpiceMsgDisplayDrawOpaque(a, at)
+{
+    this.from_buffer(a, at);
+}
+
+SpiceMsgDisplayDrawOpaque.prototype =
+{
+    from_buffer: function(a, at)
+    {
+        at = at || 0;
+        var dv = new DataView(a);
+        this.base = new SpiceMsgDisplayBase;
+        at = this.base.from_dv(dv, at, a);
+        this.data = new SpiceOpaque;
+        return this.data.from_dv(dv, at, a);
+    },
+}
+
+function SpiceMsgDisplayDrawBlend(a, at)
+{
+    this.from_buffer(a, at);
+}
+
+SpiceMsgDisplayDrawBlend.prototype =
+{
+    from_buffer: function(a, at)
+    {
+        at = at || 0;
+        var dv = new DataView(a);
+        this.base = new SpiceMsgDisplayBase;
+        at = this.base.from_dv(dv, at, a);
+        this.data = new SpiceCopy;
+        return this.data.from_dv(dv, at, a);
+    },
+}
+
+function SpiceMsgDisplayDrawMaskOnly(a, at)
+{
+    this.from_buffer(a, at);
+}
+
+SpiceMsgDisplayDrawMaskOnly.prototype =
+{
+    from_buffer: function(a, at)
+    {
+        at = at || 0;
+        var dv = new DataView(a);
+        this.base = new SpiceMsgDisplayBase;
+        at = this.base.from_dv(dv, at, a);
+        this.data = new SpiceMaskOnly;
+        return this.data.from_dv(dv, at, a);
+    },
+}
+
+function SpiceMsgDisplayDrawTransparent(a, at)
+{
+    this.from_buffer(a, at);
+}
+
+SpiceMsgDisplayDrawTransparent.prototype =
+{
+    from_buffer: function(a, at)
+    {
+        at = at || 0;
+        var dv = new DataView(a);
+        this.base = new SpiceMsgDisplayBase;
+        at = this.base.from_dv(dv, at, a);
+        this.data = new SpiceTransparent;
+        return this.data.from_dv(dv, at, a);
+    },
+}
+
+function SpiceMsgDisplayDrawRop3(a, at)
+{
+    this.from_buffer(a, at);
+}
+
+SpiceMsgDisplayDrawRop3.prototype =
+{
+    from_buffer: function(a, at)
+    {
+        at = at || 0;
+        var dv = new DataView(a);
+        this.base = new SpiceMsgDisplayBase;
+        at = this.base.from_dv(dv, at, a);
+        this.data = new SpiceRop3;
+        return this.data.from_dv(dv, at, a);
+    },
+}
+
+function SpiceMsgDisplayDrawComposite(a, at)
+{
+    this.from_buffer(a, at);
+}
+
+SpiceMsgDisplayDrawComposite.prototype =
+{
+    from_buffer: function(a, at)
+    {
+        at = at || 0;
+        var dv = new DataView(a);
+        this.base = new SpiceMsgDisplayBase;
+        at = this.base.from_dv(dv, at, a);
+        this.data = new SpiceComposite;
+        return this.data.from_dv(dv, at, a);
+    },
+}
+
+/* INVAL_PALETTE: the id of one cached palette to drop. */
+function SpiceMsgDisplayInvalPalette(a, at)
+{
+    at = at || 0;
+    var dv = new DataView(a);
+    this.id = dv.getBigUint64(at, true);
+}
+
 function SpiceMsgDisplayCopyBits(a, at)
 {
     this.from_buffer(a, at);
@@ -1216,6 +1337,14 @@ SpiceMsgMainMultiMediaTime.prototype =
         this.time = dv.getUint32(at, true); at += 4;
         return at;
     },
+}
+
+/* CURSOR_INVAL_ONE: the id of one cached shape to drop. */
+function SpiceMsgCursorInvalOne(a, at)
+{
+    at = at || 0;
+    var dv = new DataView(a);
+    this.id = dv.getBigUint64(at, true);
 }
 
 function SpiceMsgCursorMove(a, at)
@@ -1660,6 +1789,13 @@ export {
   SpiceMsgDisplayDrawAlphaBlend,
   SpiceMsgDisplayDrawText,
   SpiceMsgDisplayDrawStroke,
+  SpiceMsgDisplayDrawOpaque,
+  SpiceMsgDisplayDrawBlend,
+  SpiceMsgDisplayDrawMaskOnly,
+  SpiceMsgDisplayDrawTransparent,
+  SpiceMsgDisplayDrawRop3,
+  SpiceMsgDisplayDrawComposite,
+  SpiceMsgDisplayInvalPalette,
   SpiceMsgDisplayCopyBits,
   SpiceMsgSurfaceCreate,
   SpiceMsgSurfaceDestroy,
@@ -1667,6 +1803,7 @@ export {
   SpiceMsgInputsKeyModifiers,
   SpiceMsgCursorInit,
   SpiceMsgCursorMove,
+  SpiceMsgCursorInvalOne,
   SpiceMsgMainMultiMediaTime,
   SpiceMsgPlaybackData,
   SpiceMsgPlaybackMode,

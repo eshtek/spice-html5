@@ -740,7 +740,7 @@ export class FakeSpiceServer {
     const out = { ...args };
     const image = args.image as frames.ImageSpec | undefined;
     if (image) {
-      if (msg === "drawCopyBitmap" || msg === "drawAlphaBlendBitmap") {
+      if (msg === "drawCopyBitmap" || msg === "drawAlphaBlendBitmap" || msg === "drawBlendBitmap" || msg === "drawOpaqueBitmap" || msg === "drawRop3Bitmap" || msg === "drawTransparentBitmap") {
         const rgba = frames.renderRGBA(image);
         out.pixels = args.format === "rgba" ? frames.rgbaToBGRA(rgba) : frames.rgbaToBGRx(rgba);
         out.imageWidth = image.width;
@@ -816,6 +816,8 @@ export class FakeSpiceServer {
       keyModifiers: ["modifiers"],
       cursorMove: ["x", "y"],
       invalList: ["ids"],
+      invalPalette: ["id"],
+      cursorInvalOne: ["id"],
       disconnecting: ["reason"],
     };
     if (positional[msg]) return builder(...positional[msg].map((k) => resolved[k]));

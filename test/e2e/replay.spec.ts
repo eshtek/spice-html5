@@ -1,7 +1,12 @@
 /* A session recorded from a real box (test/README.md, "Recording real
    boxes") replayed through the fake server: real QUIC/LZ draw payloads,
    a real Windows cursor shape, and every channel a TrueNAS VM exposes. */
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { expect, test } from "./fixtures";
+
+const HERE = dirname(fileURLToPath(import.meta.url));
 
 const FIXTURE = "fixtures/goldeye-win11-idle.rec.json";
 
@@ -97,4 +102,42 @@ test("the goldeye Windows 7 recording paints its desktop with no unhandled draw"
   if (process.env.SHOT) await client.page.screenshot({ path: process.env.SHOT });
   expect(await client.errors()).toEqual([]);
   expect((await client.messages()).filter((m) => /Unknown message|FIXME|unhandled|unimplemented/i.test(m))).toEqual([]);
+});
+
+/* Recorded with the client advertising Composite and A8 surfaces: the X
+   driver kept to copies and fills (its caps are read when X starts) and
+   used seven ARGB offscreen surfaces. */
+test("the xf86-video-qxl recording with the composite caps replays clean", async ({ client, spice }) => {
+  await spice.reset({ replay: "fixtures/goldeye-ubuntu2004-xf86qxl-composite.rec.json" });
+  await client.connectReady({ channels: ["display", "inputs", "cursor"] });
+  await client.page.waitForTimeout(6000);
+  expect(await client.errors()).toEqual([]);
+  expect((await client.messages()).filter((m) => /Unknown message|FIXME|unhandled|unimplemented|cannot handle/i.test(m))).toEqual([]);
+});
+
+/* The Windows 7 lock screen: cursor shapes cached and referred back to. */
+test("the busier Windows 7 recording uses the cursor cache without a warning", async ({ client, spice }) => {
+  await spice.reset({ replay: "fixtures/goldeye-win7-xpdm-busy.rec.json" });
+  await client.connectReady({ channels: ["display", "inputs", "cursor"] });
+  await client.page.waitForTimeout(6000);
+  expect(await client.errors()).toEqual([]);
+  expect((await client.messages()).filter((m) => /Unknown message|FIXME|unhandled|unimplemented|cannot handle/i.test(m))).toEqual([]);
+});
+
+/* Recorded after a guest reboot with the client connected, so X started
+   with Composite in the QXL ROM: 20 composites from offscreen surfaces,
+   A8 surfaces fed by 8BIT_A bitmaps and LZ A8 images. */
+test("the xf86-video-qxl recording with Composite in use replays clean", async ({ client, spice }) => {
+  const fixture = "fixtures/goldeye-ubuntu2004-xf86qxl-composite-reboot.rec.json";
+  const speed = 8;
+  /* Wait out the whole recording: its last message's time, at replay speed. */
+  const rec = JSON.parse(readFileSync(join(HERE, "..", fixture), "utf8")) as { connections: Array<{ server: Array<{ t: number }> }> };
+  const lastMs = Math.max(...rec.connections.flatMap((c) => c.server.map((m) => m.t)));
+  test.setTimeout(lastMs / speed + 60_000);
+  await spice.reset({ replay: fixture, replaySpeed: speed });
+  await client.connectReady({ channels: ["display", "inputs", "cursor"] });
+  await client.page.waitForTimeout(lastMs / speed + 3000);
+  if (process.env.SHOT) await client.page.screenshot({ path: process.env.SHOT });
+  expect(await client.errors()).toEqual([]);
+  expect((await client.messages()).filter((m) => /Unknown message|FIXME|unhandled|unimplemented|cannot handle/i.test(m))).toEqual([]);
 });
