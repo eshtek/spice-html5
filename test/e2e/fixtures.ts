@@ -299,6 +299,19 @@ export class SpiceClient {
     return this.page.evaluate(() => (window as unknown as { harness: { messages: () => string[] } }).harness.messages());
   }
 
+  /* Percentage of the primary surface's pixels that are not near black:
+     how much of a recorded desktop has been painted. */
+  litPercent(): Promise<number> {
+    return this.page.evaluate(() => {
+      const c = document.getElementById("spice_surface_0") as HTMLCanvasElement | null;
+      if (!c) return 0;
+      const d = c.getContext("2d")!.getImageData(0, 0, c.width, c.height).data;
+      let lit = 0;
+      for (let i = 0; i < d.length; i += 4) if (d[i] + d[i + 1] + d[i + 2] > 30) lit++;
+      return Math.round((100 * lit) / (c.width * c.height));
+    });
+  }
+
   pixel(x: number, y: number, surface = 0): Promise<RGB | null> {
     return this.page.evaluate(
       ([x, y, s]) => (window as unknown as { harness: { pixel: (x: number, y: number, s: number) => RGB | null } }).harness.pixel(x, y, s),

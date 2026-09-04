@@ -2,7 +2,7 @@
    builder against the client's DrawCopy parser. */
 import { describe, expect, test } from "bun:test";
 import { C } from "../server/constants.ts";
-import { quadrantsRGBA, rgbaToBGR24, rgbaToBGRA, rgbaToBGRx, rgbaToRGB555 } from "../server/frames.ts";
+import { flipRows, quadrantsRGBA, rgbaToBGR24, rgbaToBGRA, rgbaToBGRx, rgbaToRGB555 } from "../server/frames.ts";
 import { lz4EncodeBlocks, lz4LiteralBlock, spiceLz4Payload } from "../server/lz4.ts";
 import * as M from "../server/messages.ts";
 import { rect } from "../server/wire.ts";
@@ -133,7 +133,7 @@ describe("spice lz4 image", () => {
     test(`${format} converts to ImageData, top-down and bottom-up`, () => {
       const pixels = convert(rgba);
       for (const topDown of [true, false]) {
-        const rows = topDown ? pixels : flip(pixels, width, height);
+        const rows = topDown ? pixels : flipRows(pixels, width, height, pixels.length / (width * height));
         const payload = spiceLz4Payload(topDown, fmt, lz4EncodeBlocks(rows, [rows.length]));
         const img = convert_spice_lz4_to_web(context, descriptor, { data: payload.buffer });
         expect(img).toBeDefined();
@@ -161,10 +161,3 @@ describe("spice lz4 image", () => {
     expect(new Uint8Array(bitmap!.data)).toEqual(new Uint8Array(pixels));
   });
 });
-
-function flip(pixels: Uint8Array, width: number, height: number): Uint8Array {
-  const stride = pixels.length / height;
-  const out = new Uint8Array(pixels.length);
-  for (let y = 0; y < height; y++) out.set(pixels.subarray(y * stride, (y + 1) * stride), (height - 1 - y) * stride);
-  return out;
-}

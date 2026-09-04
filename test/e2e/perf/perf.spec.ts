@@ -59,19 +59,19 @@ async function metrics(cdp: CDPSession) {
   return { task: get("TaskDuration") * 1000, script: get("ScriptDuration") * 1000, layout: get("LayoutDuration") * 1000, heap: get("JSHeapUsedSize") };
 }
 
-async function measure(page: import("@playwright/test").Page, cdp: CDPSession, work: () => Promise<void>, counters: () => Promise<Counters>): Promise<Sample> {
+async function measure(client: SpiceClient, cdp: CDPSession, work: () => Promise<void>): Promise<Sample> {
   await cdp.send("HeapProfiler.collectGarbage");
-  const c0 = await counters();
+  const c0 = await client.counters();
   const m0 = await metrics(cdp);
-  const p0 = await startMeasure(page);
+  const p0 = await client.startMeasure();
   const t0 = Date.now();
   await work();
   const wallMs = Date.now() - t0;
-  await page.waitForTimeout(250);
-  await stopMeasure(page);
+  await client.page.waitForTimeout(250);
+  await client.stopMeasure();
   await cdp.send("HeapProfiler.collectGarbage");
   const m1 = await metrics(cdp);
-  const c1 = await counters();
+  const c1 = await client.counters();
   return {
     taskMs: Math.round(m1.task - m0.task),
     scriptMs: Math.round(m1.script - m0.script),
@@ -91,20 +91,6 @@ async function measure(page: import("@playwright/test").Page, cdp: CDPSession, w
     queueMax: c1.queueMax,
     queueMean: c1.queueSamples ? Math.round((c1.queueSum / c1.queueSamples) * 100) / 100 : 0,
   };
-}
-
-/* The page-side sampler lives on window.__counters (fixtures.ts). */
-function startMeasure(page: import("@playwright/test").Page) {
-  return page.evaluate(() => {
-    const c = (window as unknown as { __counters: { markDraws: () => void; startQueueSampler: () => void } }).__counters;
-    c.markDraws();
-    c.startQueueSampler();
-    return performance.now();
-  });
-}
-
-function stopMeasure(page: import("@playwright/test").Page) {
-  return page.evaluate(() => (window as unknown as { __counters: { stopQueueSampler: () => void } }).__counters.stopQueueSampler());
 }
 
 function record(name: string, sample: Sample) {
@@ -146,12 +132,11 @@ test("mjpeg 640x480 @30fps for 5s", async ({ client, spice }) => {
   const cdp = await client.page.context().newCDPSession(client.page);
   await cdp.send("Performance.enable");
   const sample = await measure(
-    client.page,
+    client,
     cdp,
     async () => {
       await spice.run({ cmd: "stream", args: { id: 0, frames: 150, fps: 30, width: 640, height: 480, destroy: true } });
     },
-    () => client.counters(),
   );
   expect(sample.images).toBeGreaterThanOrEqual(140);
   expect(sample.urlsLeaked).toBe(0);
@@ -162,12 +147,11 @@ test("mjpeg 320x240 @60fps for 5s", async ({ client, spice }) => {
   const cdp = await client.page.context().newCDPSession(client.page);
   await cdp.send("Performance.enable");
   const sample = await measure(
-    client.page,
+    client,
     cdp,
     async () => {
       await spice.run({ cmd: "stream", args: { id: 0, frames: 300, fps: 60, width: 320, height: 240, destroy: true } });
     },
-    () => client.counters(),
   );
   expect(sample.urlsLeaked).toBe(0);
   record("mjpeg-320x240-60fps-5s", sample);
@@ -177,14 +161,13 @@ test("500 bitmap draw copies of 128x128", async ({ client, spice }) => {
   const cdp = await client.page.context().newCDPSession(client.page);
   await cdp.send("Performance.enable");
   const sample = await measure(
-    client.page,
+    client,
     cdp,
     async () => {
       await spice.run({ cmd: "drawBurst", args: { count: 500, size: 128, seed: 5 } });
       await spice.send("display", "drawFill", { box: box(0, 0, 4, 4), color: 0xffffff });
       await client.expectPixel(1, 1, [255, 255, 255]);
     },
-    () => client.counters(),
   );
   expect(sample.urlsLeaked).toBe(0);
   record("bitmap-burst-500x128", sample);
@@ -194,7 +177,7 @@ test("300 jpeg draw copies of 128x128", async ({ client, spice }) => {
   const cdp = await client.page.context().newCDPSession(client.page);
   await cdp.send("Performance.enable");
   const sample = await measure(
-    client.page,
+    client,
     cdp,
     async () => {
       await spice.run({ cmd: "drawBurst", args: { count: 300, size: 128, seed: 9, jpeg: true } });
@@ -202,7 +185,6 @@ test("300 jpeg draw copies of 128x128", async ({ client, spice }) => {
       await client.expectPixel(1, 1, [255, 255, 255]);
       await expect.poll(() => client.counters().then((c) => c.objectUrlsCreated - c.objectUrlsRevoked)).toBe(0);
     },
-    () => client.counters(),
   );
   expect(sample.urlsLeaked).toBe(0);
   record("jpeg-burst-300x128", sample);
@@ -246,7 +228,7 @@ for (const [name, args, surfaceFormat] of [
     await bigSurface(client, spice, surfaceFormat);
     const cdp = await client.page.context().newCDPSession(client.page);
     await cdp.send("Performance.enable");
-    const sample = await measure(client.page, cdp, () => burst(client, spice, { ...args }), () => client.counters());
+    const sample = await measure(client, cdp, () => burst(client, spice, { ...args }));
     expect(sample.urlsLeaked).toBe(0);
     expect(await client.errors()).toEqual([]);
     record(name, sample);
@@ -299,14 +281,7 @@ test("profile: goldeye win11 replay", async ({ client, spice }) => {
     await expect
       .poll(
         () =>
-          client.page.evaluate(() => {
-            const c = document.getElementById("spice_surface_0") as HTMLCanvasElement | null;
-            if (!c) return 0;
-            const d = c.getContext("2d")!.getImageData(0, 0, c.width, c.height).data;
-            let lit = 0;
-            for (let i = 0; i < d.length; i += 4) if (d[i] + d[i + 1] + d[i + 2] > 30) lit++;
-            return Math.round((100 * lit) / (c.width * c.height));
-          }),
+          client.litPercent(),
         { timeout: 20_000 },
       )
       .toBeGreaterThanOrEqual(95);
@@ -323,13 +298,12 @@ test("connect to first paint of the desktop over 256 kbit/s at 150 ms", async ({
   const cdp = await client.page.context().newCDPSession(client.page);
   await cdp.send("Performance.enable");
   const sample = await measure(
-    client.page,
+    client,
     cdp,
     async () => {
       await client.connectReady();
       await client.expectPixel(100, 100, [255, 0, 0], 8, 30_000);
     },
-    () => client.counters(),
   );
   expect(sample.firstPaintMs).toBeGreaterThan(600);
   record("desktop-first-paint-shaped-256kbps-150ms", sample);
@@ -346,14 +320,13 @@ test("100 bitmap draw copies of 128x128 over 20 Mbit/s at 150 ms", async ({ clie
   const cdp = await client.page.context().newCDPSession(client.page);
   await cdp.send("Performance.enable");
   const sample = await measure(
-    client.page,
+    client,
     cdp,
     async () => {
       await spice.run({ cmd: "drawBurst", args: { count: 100, size: 128, seed: 5 } });
       await spice.send("display", "drawFill", { box: box(0, 0, 4, 4), color: 0xffffff });
       await client.expectPixel(2, 2, [255, 255, 255], 8, 30_000);
     },
-    () => client.counters(),
   );
   expect(sample.puts + sample.draws).toBeGreaterThanOrEqual(100);
   record("bitmap-burst-100x128-shaped-20mbps-150ms", sample);
@@ -369,14 +342,13 @@ test("mjpeg 160x120 @30fps for 3s over 2 Mbit/s at 50 ms", async ({ client, spic
   const cdp = await client.page.context().newCDPSession(client.page);
   await cdp.send("Performance.enable");
   const sample = await measure(
-    client.page,
+    client,
     cdp,
     async () => {
       await spice.run({ cmd: "stream", args: { id: 0, frames: 90, fps: 30, width: 160, height: 120, destroy: true } });
       await expect.poll(async () => (await spice.state()).connections.find((c) => c.channel === "display")?.shapedBytes, { timeout: 20_000 }).toBe(0);
       await client.page.waitForTimeout(300);
     },
-    () => client.counters(),
   );
   expect(sample.images).toBeGreaterThanOrEqual(80);
   expect(sample.urlsLeaked).toBe(0);
@@ -398,7 +370,7 @@ async function mouseStorm(client: SpiceClient, spice: SpiceControl, coalesce: bo
   await cdp.send("Performance.enable");
   const before = await spice.mark();
   const sample = await measure(
-    client.page,
+    client,
     cdp,
     async () => {
       await client.mouseStorm({ frames: 100, perFrame: 5, from: [10, 10], to: [610, 460] });
@@ -407,7 +379,6 @@ async function mouseStorm(client: SpiceClient, spice: SpiceControl, coalesce: bo
         .poll(async () => (await spice.inbound("inputs", "mouse_position", before)).slice(-1).map((m) => Math.abs((m.fields.x as number) - 610) <= 1 && Math.abs((m.fields.y as number) - 460) <= 1), { timeout: 5000 })
         .toEqual([true]);
     },
-    () => client.counters(),
   );
   const sends = (await spice.inbound("inputs", "mouse_position", before)).length;
   console.log(`perf mouse-storm-500-${coalesce ? "coalesced" : "raw"}: sends=${sends} wallMs=${sample.wallMs}`);
@@ -431,7 +402,7 @@ test("20 connect/disconnect cycles hold the heap flat", async ({ client, spice }
   await cdp.send("Performance.enable");
   await client.disconnect();
   const sample = await measure(
-    client.page,
+    client,
     cdp,
     async () => {
       for (let i = 0; i < 20; i++) {
@@ -442,7 +413,6 @@ test("20 connect/disconnect cycles hold the heap flat", async ({ client, spice }
         await expect.poll(async () => (await spice.state()).connections.length).toBe(0);
       }
     },
-    () => client.counters(),
   );
   expect(sample.urlsLeaked).toBe(0);
   expect(sample.heapDeltaMB).toBeLessThan(8);

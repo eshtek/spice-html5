@@ -17,14 +17,7 @@ test("the goldeye Windows 11 recording paints the whole desktop", async ({ clien
   await expect
     .poll(
       () =>
-        client.page.evaluate(() => {
-          const c = document.getElementById("spice_surface_0") as HTMLCanvasElement | null;
-          if (!c) return 0;
-          const d = c.getContext("2d")!.getImageData(0, 0, c.width, c.height).data;
-          let lit = 0;
-          for (let i = 0; i < d.length; i += 4) if (d[i] + d[i + 1] + d[i + 2] > 30) lit++;
-          return Math.round((100 * lit) / (c.width * c.height));
-        }),
+        client.litPercent(),
       { timeout: 10_000 },
     )
     .toBeGreaterThanOrEqual(95);
@@ -64,14 +57,7 @@ test("the goldeye LZ4 recording paints the desktop from LZ4 images alone", async
   await expect
     .poll(
       () =>
-        client.page.evaluate(() => {
-          const c = document.getElementById("spice_surface_0") as HTMLCanvasElement | null;
-          if (!c) return 0;
-          const d = c.getContext("2d")!.getImageData(0, 0, c.width, c.height).data;
-          let lit = 0;
-          for (let i = 0; i < d.length; i += 4) if (d[i] + d[i + 1] + d[i + 2] > 30) lit++;
-          return Math.round((100 * lit) / (c.width * c.height));
-        }),
+        client.litPercent(),
       { timeout: 20_000 },
     )
     .toBeGreaterThanOrEqual(60);
@@ -87,14 +73,7 @@ test("the goldeye Windows 7 recording paints its desktop with no unhandled draw"
   await expect
     .poll(
       () =>
-        client.page.evaluate(() => {
-          const c = document.getElementById("spice_surface_0") as HTMLCanvasElement | null;
-          if (!c) return 0;
-          const d = c.getContext("2d")!.getImageData(0, 0, c.width, c.height).data;
-          let lit = 0;
-          for (let i = 0; i < d.length; i += 4) if (d[i] + d[i + 1] + d[i + 2] > 30) lit++;
-          return Math.round((100 * lit) / (c.width * c.height));
-        }),
+        client.litPercent(),
       { timeout: 20_000 },
     )
     .toBeGreaterThanOrEqual(60);
