@@ -64,7 +64,7 @@ export class SpiceControl {
     return this.call<{
       mmNow: number;
       inboundCount: number;
-      connections: Array<{ channel: string; channelId: number; state: string; messagesIn: number; messagesOut: number; bytesOut: number; dropped: number; shapedBytes: number; channelCaps: number[] }>;
+      connections: Array<{ channel: string; channelId: number; state: string; messagesIn: number; messagesOut: number; bytesOut: number; dropped: number; shapedBytes: number; session: number | null; channelCaps: number[] }>;
       log: string[];
     }>("state");
   }

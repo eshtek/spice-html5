@@ -99,6 +99,19 @@ interface Conn {
   shaper: Shaper | null;
   need: number;
   motions: number;
+  /* The replay session this channel belongs to, in replay mode. */
+  session: ReplaySession | null;
+}
+
+/* One client's pass through a recording: its own clock, its own copy of
+   which recorded channels are taken, its own timers.  Sessions are told
+   apart by the id the server writes into each client's MAIN_INIT, which
+   the client then sends on every child channel's link. */
+interface ReplaySession {
+  id: number;
+  epoch: number;
+  consumed: Set<number>;
+  timers: Array<ReturnType<typeof setTimeout>>;
 }
 
 export interface InboundRecord extends M.ClientMessage {
@@ -276,9 +289,7 @@ export class FakeSpiceServer {
   private waiters: Waiter[] = [];
   private seq = 0;
   private recording: Recording | null = null;
-  private replayConsumed = new Set<number>();
-  private replayEpoch = 0;
-  private replayTimers: Array<ReturnType<typeof setTimeout>> = [];
+  private sessions = new Map<number, ReplaySession>();
   log: string[] = [];
 
   get port() {
@@ -376,8 +387,7 @@ export class FakeSpiceServer {
       w.reject(new Error("server reset"));
     }
     this.waiters = [];
-    for (const t of this.replayTimers) clearTimeout(t);
-    this.replayTimers = [];
+    this.endSessions();
     this.inbound = [];
     this.log = [];
     this.seq = 0;
@@ -385,7 +395,6 @@ export class FakeSpiceServer {
     this.mmBase = 1000;
     this.config = { ...DEFAULT_CONFIG, ...partial };
     this.recording = null;
-    this.replayConsumed.clear();
     if (this.config.replay) {
       /* Relative to the test tree, not to wherever the runner was launched. */
       const path = isAbsolute(this.config.replay) ? this.config.replay : resolve(TEST_ROOT, this.config.replay);
@@ -427,6 +436,7 @@ export class FakeSpiceServer {
       shaper: null,
       need: 0,
       motions: 0,
+      session: null,
     };
     if (this.config.shape) conn.shaper = new Shaper(this.config.shape, (b) => this.deliver(conn, b));
     this.conns.set(conn.id, conn);
@@ -448,6 +458,9 @@ export class FakeSpiceServer {
     conn.coalesce = [];
     if (conn.shaper) conn.shaper.clear();
     this.conns.delete(conn.id);
+    /* A main channel going away ends its session; its children can
+       expect nothing more. */
+    if (conn.channelType === C.SPICE_CHANNEL_MAIN && conn.session) this.endSession(conn.session);
     this.log.push(`${reason} ${channelName(conn.channelType)}:${conn.channelId}`);
     try {
       conn.ws.close(code);
@@ -960,34 +973,61 @@ export class FakeSpiceServer {
 
   /* ---------- replay ---------- */
 
+  private endSession(session: ReplaySession) {
+    for (const t of session.timers) clearTimeout(t);
+    session.timers = [];
+    this.sessions.delete(session.id);
+  }
+
+  private endSessions() {
+    for (const s of [...this.sessions.values()]) this.endSession(s);
+  }
+
+  /* The session a child channel belongs to: the one whose id it sent on
+     its link, else the newest, for a client that sent the recorded one. */
+  private sessionFor(conn: Conn): ReplaySession | undefined {
+    const byId = this.sessions.get(conn.connectionId);
+    if (byId) return byId;
+    let newest: ReplaySession | undefined;
+    for (const s of this.sessions.values()) newest = s;
+    return newest;
+  }
+
   private scheduleReplay(conn: Conn) {
     const rec = this.recording;
     if (!rec) return;
-    /* A new main channel is a new session: hand it the recording from the
-       top, and stop feeding whatever the previous session had left. */
+    let session: ReplaySession | undefined;
     if (conn.channelType === C.SPICE_CHANNEL_MAIN) {
-      for (const t of this.replayTimers) clearTimeout(t);
-      this.replayTimers = [];
-      this.replayConsumed.clear();
-      this.replayEpoch = 0;
+      /* A new main channel is a new session with the recording from the
+         top; any other session keeps playing on its own clock. */
+      session = { id: this.sessionId++, epoch: 0, consumed: new Set(), timers: [] };
+      this.sessions.set(session.id, session);
+      conn.connectionId = session.id;
+    } else {
+      session = this.sessionFor(conn);
+      if (!session) {
+        this.log.push(`replay: ${channelName(conn.channelType)}:${conn.channelId} arrived with no session`);
+        return;
+      }
     }
+    conn.session = session;
     const idx = rec.connections.findIndex(
-      (c, i) => !this.replayConsumed.has(i) && c.channelType === conn.channelType && c.channelId === conn.channelId,
+      (c, i) => !session.consumed.has(i) && c.channelType === conn.channelType && c.channelId === conn.channelId,
     );
     if (idx === -1) {
       this.log.push(`replay: no recorded connection for ${channelName(conn.channelType)}:${conn.channelId}`);
       return;
     }
-    this.replayConsumed.add(idx);
+    session.consumed.add(idx);
     const recConn = rec.connections[idx];
-    if (conn.channelType === C.SPICE_CHANNEL_MAIN || !this.replayEpoch) {
-      this.replayEpoch = Date.now() - recConn.readyAt / this.config.replaySpeed;
+    if (conn.channelType === C.SPICE_CHANNEL_MAIN || !session.epoch) {
+      session.epoch = Date.now() - recConn.readyAt / this.config.replaySpeed;
     }
-    this.scheduleRecorded(conn, recConn);
-    if (conn.channelType === C.SPICE_CHANNEL_MAIN && this.config.replayLoop) this.scheduleLoop();
+    this.scheduleRecorded(session, conn, recConn);
+    if (conn.channelType === C.SPICE_CHANNEL_MAIN && this.config.replayLoop) this.scheduleLoop(session);
   }
 
-  private scheduleRecorded(conn: Conn, recConn: Recording["connections"][number], skip?: (type: number) => boolean) {
+  private scheduleRecorded(session: ReplaySession, conn: Conn, recConn: Recording["connections"][number], skip?: (type: number) => boolean) {
     /* Every message goes on a timer measured from one clock reading, and
        overdue ones get a zero delay rather than firing inline: decoding a
        long recording takes long enough that a later message could come
@@ -998,15 +1038,23 @@ export class FakeSpiceServer {
     const now = Date.now();
     for (const m of recConn.server) {
       if (skip?.(m.type)) continue;
-      const at = this.replayEpoch + m.t / this.config.replaySpeed;
+      const at = session.epoch + m.t / this.config.replaySpeed;
+      let payload = new Uint8Array(Buffer.from(m.data, "base64"));
+      /* The recorded MAIN_INIT names the recorded session; each client
+         gets this session's id instead, and sends it back on its child
+         channels, which is how they find their way here. */
+      if (conn.channelType === C.SPICE_CHANNEL_MAIN && m.type === C.SPICE_MSG_MAIN_INIT && payload.length >= 4) {
+        payload = payload.slice();
+        new DataView(payload.buffer, payload.byteOffset).setUint32(0, session.id, true);
+      }
       /* The recording keeps type and payload apart; the wire wants the
          mini header back in front. */
-      const bytes = mini(m.type, new Uint8Array(Buffer.from(m.data, "base64")));
+      const bytes = mini(m.type, payload);
       const fire = () => {
         if (conn.state !== "ready") return;
         this.send(conn, bytes);
       };
-      this.replayTimers.push(setTimeout(fire, Math.max(0, at - now)));
+      session.timers.push(setTimeout(fire, Math.max(0, at - now)));
     }
   }
 
@@ -1017,19 +1065,19 @@ export class FakeSpiceServer {
     return end;
   }
 
-  private scheduleLoop() {
-    const at = this.replayEpoch + this.recordingEnd() / this.config.replaySpeed + LOOP_GAP_MS;
-    this.replayTimers.push(setTimeout(() => this.loopReplay(), Math.max(0, at - Date.now())));
+  private scheduleLoop(session: ReplaySession) {
+    const at = session.epoch + this.recordingEnd() / this.config.replaySpeed + LOOP_GAP_MS;
+    session.timers.push(setTimeout(() => this.loopReplay(session), Math.max(0, at - Date.now())));
   }
 
-  /* Start the non-main channels over: the recording opens with the
-     surfaces and a full repaint, so destroying what it created and
+  /* Start a session's non-main channels over: the recording opens with
+     the surfaces and a full repaint, so destroying what it created and
      replaying it from the top is a clean second pass for any client. The
      main channel keeps its session; a second MainInit would not be one. */
-  private loopReplay() {
+  private loopReplay(session: ReplaySession) {
     const rec = this.recording;
-    if (!rec) return;
-    const live = [...this.conns.values()].filter((c) => c.state === "ready" && c.channelType !== C.SPICE_CHANNEL_MAIN);
+    if (!rec || !this.sessions.has(session.id)) return;
+    const live = [...this.conns.values()].filter((c) => c.state === "ready" && c.session === session && c.channelType !== C.SPICE_CHANNEL_MAIN);
     const pairs = live
       .map((conn) => ({ conn, recConn: rec.connections.find((r) => r.channelType === conn.channelType && r.channelId === conn.channelId) }))
       .filter((p): p is { conn: Conn; recConn: Recording["connections"][number] } => p.recConn !== undefined && p.recConn.server.length > 0);
@@ -1045,16 +1093,16 @@ export class FakeSpiceServer {
       for (const id of ids) this.send(conn, M.surfaceDestroy(id));
     }
     const firstT = Math.min(...pairs.map((p) => p.recConn.server[0].t));
-    this.replayEpoch = Date.now() + LOOP_GAP_MS - firstT / this.config.replaySpeed;
-    this.log.push("replay: loop");
+    session.epoch = Date.now() + LOOP_GAP_MS - firstT / this.config.replaySpeed;
+    this.log.push(`replay: loop session ${session.id}`);
     /* A channel's init message is a once-per-connection thing: spice-gtk
        asserts on a second CURSOR_INIT, so later passes leave them out. */
     for (const { conn, recConn } of pairs) {
       const init =
         conn.channelType === C.SPICE_CHANNEL_CURSOR ? C.SPICE_MSG_CURSOR_INIT : conn.channelType === C.SPICE_CHANNEL_INPUTS ? C.SPICE_MSG_INPUTS_INIT : -1;
-      this.scheduleRecorded(conn, recConn, (type) => type === init);
+      this.scheduleRecorded(session, conn, recConn, (type) => type === init);
     }
-    this.scheduleLoop();
+    this.scheduleLoop(session);
   }
 
   /* ---------- HTTP ---------- */
@@ -1074,6 +1122,7 @@ export class FakeSpiceServer {
         bytesOut: c.bytesOut,
         dropped: c.dropped,
         shapedBytes: c.shaper?.pendingBytes ?? 0,
+        session: c.session?.id ?? null,
         channelCaps: c.channelCaps,
       })),
       log: this.log,

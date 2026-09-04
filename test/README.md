@@ -135,7 +135,14 @@ spicy --uri=spice://127.0.0.1:5900 -w ''
 spicy takes ~15 s to appear on macOS (GStreamer plugin scan). `--loop` starts
 the display, cursor and inputs streams over when the recording ends, after
 destroying the surfaces it created, so any client sees a clean second pass;
-the main channel keeps its session. A new main-channel connection always
-restarts the replay from the top. The same replay through spice-html5 is
+the main channel keeps its session. The same replay through spice-html5 is
 `http://127.0.0.1:5959/` in a browser (the page at `/` auto-connects).
 `--speed 0.5` slows the replay, `--speed 4` hurries it.
+
+Every main-channel connection is its own replay session: it gets the
+recording from the top on its own clock, loops on its own, and ends when
+its main channel closes, without touching any other session. So spicy on
+TCP and spice-html5 on WebSocket can watch the same recording side by side
+for comparison. The server tells sessions apart by rewriting the session id
+in each client's MAIN_INIT, which the client sends back on every child
+channel's link; `state` lists the session per connection.

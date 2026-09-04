@@ -53,7 +53,7 @@ test("loop mode plays the recording again after it ends", async ({ client, spice
   await expect.poll(() => client.counters().then((c) => c.canvases), { timeout: 15_000 }).toBeGreaterThanOrEqual(3);
   await expect(client.surface()).toHaveCount(1);
   expect(await client.errors()).toEqual([]);
-  expect((await spice.state()).log.filter((l) => l === "replay: loop").length).toBeGreaterThanOrEqual(2);
+  expect((await spice.state()).log.filter((l) => /^replay: loop/.test(l)).length).toBeGreaterThanOrEqual(2);
 });
 
 /* The same Ubuntu guest after the client asked for LZ4: every fresh image
@@ -140,4 +140,33 @@ test("the xf86-video-qxl recording with Composite in use replays clean", async (
   if (process.env.SHOT) await client.page.screenshot({ path: process.env.SHOT });
   expect(await client.errors()).toEqual([]);
   expect((await client.messages()).filter((m) => /Unknown message|FIXME|unhandled|unimplemented|cannot handle/i.test(m))).toEqual([]);
+});
+
+/* Two clients on one replaying server, side by side: each gets the
+   recording from the top on its own clock, and neither disturbs the other. */
+test("a second session replays alongside the first without restarting it", async ({ client, spice }) => {
+  await spice.reset({ replay: FIXTURE, replaySpeed: 2 });
+  await client.connectReady({ channels: ["display"] });
+  await expect(client.surface()).toHaveAttribute("width", "1400");
+  const before = (await spice.state()).connections.find((c) => c.channel === "display")!;
+  const page2 = await client.page.context().newPage();
+  await page2.goto(`${spice.baseUrl}/page.html`);
+  await page2.waitForFunction(() => Boolean((window as unknown as { harness?: unknown }).harness));
+  await page2.evaluate(() => (window as unknown as { harness: { connect: (o: unknown) => Promise<string> } }).harness.connect({}));
+  await expect.poll(async () => (await spice.state()).connections.filter((c) => c.channel === "main").length).toBe(2);
+  await expect.poll(() => page2.evaluate(() => (document.getElementById("spice_surface_0") as HTMLCanvasElement | null)?.width ?? 0)).toBe(1400);
+  const state = await spice.state();
+  const mains = state.connections.filter((c) => c.channel === "main").map((c) => c.session);
+  expect(new Set(mains).size).toBe(2);
+  /* The first client's display channel keeps its session and keeps receiving. */
+  const first = state.connections.find((c) => c.channel === "display" && c.session === mains[0])!;
+  expect(first.messagesOut).toBeGreaterThanOrEqual(before.messagesOut);
+  await expect.poll(async () => (await spice.state()).connections.find((c) => c.channel === "display" && c.session === mains[0])!.messagesOut).toBeGreaterThan(first.messagesOut);
+  const ids = await Promise.all([
+    client.page.evaluate(() => (window as unknown as { harness: { sc: { connection_id: number } } }).harness.sc.connection_id),
+    page2.evaluate(() => (window as unknown as { harness: { sc: { connection_id: number } } }).harness.sc.connection_id),
+  ]);
+  expect(ids[0]).not.toBe(ids[1]);
+  expect(await client.errors()).toEqual([]);
+  await page2.close();
 });
