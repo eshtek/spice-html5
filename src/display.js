@@ -476,10 +476,13 @@ function source_for_box(image_data, src, box)
         scratch_canvas = document.createElement("canvas");
         scratch_context = scratch_canvas.getContext("2d");
     }
+    /* The scaled copy goes below the image on the same canvas, so the
+       canvas must hold both: rows of the copy past the canvas edge read
+       back as transparent black. */
     if (scratch_canvas.width < Math.max(w, image_data.width))
         scratch_canvas.width = Math.max(w, image_data.width);
-    if (scratch_canvas.height < Math.max(h, image_data.height))
-        scratch_canvas.height = Math.max(h, image_data.height);
+    if (scratch_canvas.height < image_data.height + h)
+        scratch_canvas.height = image_data.height + h;
     scratch_context.putImageData(image_data, 0, 0);
     scratch_context.drawImage(scratch_canvas, src.left, src.top, sw, sh, 0, image_data.height, w, h);
     return { image_data: scratch_context.getImageData(0, image_data.height, w, h), src: { left: 0, top: 0, right: w, bottom: h } };

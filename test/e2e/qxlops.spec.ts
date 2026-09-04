@@ -36,6 +36,18 @@ test.describe("blend and opaque", () => {
     await spice.send("display", "drawOpaqueBitmap", { box: box(20, 0, 16, 16), pixels: solid(16, 16, [0, 255, 255]), color: 0xff00ff, ropd: 32 });
     await client.expectPixel(28, 8, [255, 0, 0]);
   });
+
+  test("a source taller than the scratch canvas scales into the whole box", async ({ client, spice }) => {
+    /* AND with a white brush leaves the source as it is; the 160-row source plus
+       the 40-row box outgrow a 150-high scratch canvas, so the bottom of the
+       box shows whether the scaled copy was read back complete. */
+    await spice.send("display", "drawOpaqueBitmap", {
+      box: box(0, 0, 40, 40), pixels: solid(160, 160, [0, 0, 255]), imageWidth: 160, imageHeight: 160,
+      srcArea: { left: 0, top: 0, right: 160, bottom: 160 }, color: 0xffffff, ropd: 32, scaleMode: 1,
+    });
+    await client.expectPixel(20, 2, [255, 0, 0]);
+    await client.expectPixel(20, 38, [255, 0, 0]);
+  });
 });
 
 test.describe("masks", () => {
