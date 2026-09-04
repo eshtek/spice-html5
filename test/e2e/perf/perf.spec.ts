@@ -28,6 +28,11 @@ interface Sample {
   putMPx: number;
   draws: number;
   gets: number;
+  /* From the start of the work to the first canvas write; -1 when nothing was drawn. */
+  firstPaintMs: number;
+  /* The client's ordered draw queue, sampled every few ms during the work. */
+  queueMax: number;
+  queueMean: number;
 }
 
 type Baselines = Record<string, Partial<Sample>>;
@@ -36,9 +41,9 @@ type Baselines = Record<string, Partial<Sample>>;
    may exceed its baseline by TOLERANCE plus the metric's noise floor: the
    floor keeps sub-100 ms baselines from failing on scheduler jitter, and
    it is what makes the gate loose in absolute terms for small workloads. */
-const GATED: Array<keyof Sample> = ["taskMs", "scriptMs", "heapDeltaMB", "longTaskMs"];
+const GATED: Array<keyof Sample> = ["taskMs", "scriptMs", "heapDeltaMB", "longTaskMs", "firstPaintMs"];
 const TOLERANCE = 0.25;
-const NOISE_FLOOR: Partial<Record<keyof Sample, number>> = { taskMs: 50, scriptMs: 50, longTaskMs: 50, heapDeltaMB: 2 };
+const NOISE_FLOOR: Partial<Record<keyof Sample, number>> = { taskMs: 50, scriptMs: 50, longTaskMs: 50, heapDeltaMB: 2, firstPaintMs: 150 };
 
 function loadBaselines(): Baselines {
   try {
@@ -58,10 +63,12 @@ async function measure(page: import("@playwright/test").Page, cdp: CDPSession, w
   await cdp.send("HeapProfiler.collectGarbage");
   const c0 = await counters();
   const m0 = await metrics(cdp);
+  const p0 = await startMeasure(page);
   const t0 = Date.now();
   await work();
   const wallMs = Date.now() - t0;
   await page.waitForTimeout(250);
+  await stopMeasure(page);
   await cdp.send("HeapProfiler.collectGarbage");
   const m1 = await metrics(cdp);
   const c1 = await counters();
@@ -80,7 +87,24 @@ async function measure(page: import("@playwright/test").Page, cdp: CDPSession, w
     putMPx: Math.round((c1.putPixels - c0.putPixels) / 1e5) / 10,
     draws: c1.drawImage - c0.drawImage,
     gets: c1.getImageData - c0.getImageData,
+    firstPaintMs: c1.firstDrawAt ? Math.round(c1.firstDrawAt - p0) : -1,
+    queueMax: c1.queueMax,
+    queueMean: c1.queueSamples ? Math.round((c1.queueSum / c1.queueSamples) * 100) / 100 : 0,
   };
+}
+
+/* The page-side sampler lives on window.__counters (fixtures.ts). */
+function startMeasure(page: import("@playwright/test").Page) {
+  return page.evaluate(() => {
+    const c = (window as unknown as { __counters: { markDraws: () => void; startQueueSampler: () => void } }).__counters;
+    c.markDraws();
+    c.startQueueSampler();
+    return performance.now();
+  });
+}
+
+function stopMeasure(page: import("@playwright/test").Page) {
+  return page.evaluate(() => (window as unknown as { __counters: { stopQueueSampler: () => void } }).__counters.stopQueueSampler());
 }
 
 function record(name: string, sample: Sample) {
@@ -287,6 +311,76 @@ test("profile: goldeye win11 replay", async ({ client, spice }) => {
       )
       .toBeGreaterThanOrEqual(95);
   });
+});
+
+/* The desktop scenario (surface, backdrop fill, a 64 KB logo) over a
+   256 kbit/s link with 150 ms each way: how long until the user sees
+   anything after connecting, with the handshake's round trips and the
+   first draws all paying the pipe. */
+test("connect to first paint of the desktop over 256 kbit/s at 150 ms", async ({ client, spice }) => {
+  await client.disconnect();
+  await spice.reset({ shape: { latencyMs: 150, jitterMs: 10, kbps: 256, seed: 6 }, scenario: "desktop" });
+  const cdp = await client.page.context().newCDPSession(client.page);
+  await cdp.send("Performance.enable");
+  const sample = await measure(
+    client.page,
+    cdp,
+    async () => {
+      await client.connectReady();
+      await client.expectPixel(100, 100, [255, 0, 0], 8, 30_000);
+    },
+    () => client.counters(),
+  );
+  expect(sample.firstPaintMs).toBeGreaterThan(600);
+  record("desktop-first-paint-shaped-256kbps-150ms", sample);
+});
+
+/* The bitmap burst through a shaped pipe: 20 Mbit/s and 150 ms, a LAN's
+   rate with a WAN's delay. Client cost per draw should not move; the
+   wall time is the pipe's. */
+test("100 bitmap draw copies of 128x128 over 20 Mbit/s at 150 ms", async ({ client, spice }) => {
+  await client.disconnect();
+  await spice.reset({ shape: { latencyMs: 150, jitterMs: 10, kbps: 20000, seed: 4 } });
+  await client.connectReady();
+  await spice.send("display", "surfaceCreate", { width: 640, height: 480 });
+  const cdp = await client.page.context().newCDPSession(client.page);
+  await cdp.send("Performance.enable");
+  const sample = await measure(
+    client.page,
+    cdp,
+    async () => {
+      await spice.run({ cmd: "drawBurst", args: { count: 100, size: 128, seed: 5 } });
+      await spice.send("display", "drawFill", { box: box(0, 0, 4, 4), color: 0xffffff });
+      await client.expectPixel(2, 2, [255, 255, 255], 8, 30_000);
+    },
+    () => client.counters(),
+  );
+  expect(sample.puts + sample.draws).toBeGreaterThanOrEqual(100);
+  record("bitmap-burst-100x128-shaped-20mbps-150ms", sample);
+});
+
+/* A stream that fits the link, but every frame pays 50 ms and up to 20 ms
+   of jitter: what the client does with late, uneven frames. */
+test("mjpeg 160x120 @30fps for 3s over 2 Mbit/s at 50 ms", async ({ client, spice }) => {
+  await client.disconnect();
+  await spice.reset({ shape: { latencyMs: 50, jitterMs: 20, kbps: 2000, seed: 8 } });
+  await client.connectReady();
+  await spice.send("display", "surfaceCreate", { width: 640, height: 480 });
+  const cdp = await client.page.context().newCDPSession(client.page);
+  await cdp.send("Performance.enable");
+  const sample = await measure(
+    client.page,
+    cdp,
+    async () => {
+      await spice.run({ cmd: "stream", args: { id: 0, frames: 90, fps: 30, width: 160, height: 120, destroy: true } });
+      await expect.poll(async () => (await spice.state()).connections.find((c) => c.channel === "display")?.shapedBytes, { timeout: 20_000 }).toBe(0);
+      await client.page.waitForTimeout(300);
+    },
+    () => client.counters(),
+  );
+  expect(sample.images).toBeGreaterThanOrEqual(80);
+  expect(sample.urlsLeaked).toBe(0);
+  record("mjpeg-160x120-30fps-3s-shaped-2mbps-50ms", sample);
 });
 
 test("20 connect/disconnect cycles hold the heap flat", async ({ client, spice }) => {

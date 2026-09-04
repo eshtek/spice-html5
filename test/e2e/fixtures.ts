@@ -64,7 +64,7 @@ export class SpiceControl {
     return this.call<{
       mmNow: number;
       inboundCount: number;
-      connections: Array<{ channel: string; channelId: number; state: string; messagesIn: number; messagesOut: number; bytesOut: number; dropped: number; channelCaps: number[] }>;
+      connections: Array<{ channel: string; channelId: number; state: string; messagesIn: number; messagesOut: number; bytesOut: number; dropped: number; shapedBytes: number; channelCaps: number[] }>;
       log: string[];
     }>("state");
   }
@@ -116,8 +116,15 @@ export async function startServer(): Promise<SpiceControl> {
    the client under test needs no hooks. Counts what teardown must reclaim. */
 export const COUNTER_SCRIPT = `
 (() => {
-  const c = { objectUrlsCreated: 0, objectUrlsRevoked: 0, canvases: 0, images: 0, websockets: 0, audioContexts: 0, longTasks: 0, longTaskMs: 0, videos: 0, pasteListeners: 0, putImageData: 0, putPixels: 0, drawImage: 0, getImageData: 0, getPixels: 0, wsMessages: 0, wsBytes: 0 };
+  const c = { objectUrlsCreated: 0, objectUrlsRevoked: 0, canvases: 0, images: 0, websockets: 0, audioContexts: 0, longTasks: 0, longTaskMs: 0, videos: 0, pasteListeners: 0, putImageData: 0, putPixels: 0, drawImage: 0, getImageData: 0, getPixels: 0, wsMessages: 0, wsBytes: 0, firstDrawAt: 0, queueMax: 0, queueSamples: 0, queueSum: 0 };
   window.__counters = c;
+  /* First canvas write since the last markDraws(): time to first paint. */
+  const stamp = () => { if (!c.firstDrawAt) c.firstDrawAt = performance.now(); };
+  c.markDraws = () => { c.firstDrawAt = 0; };
+  /* Depth of the client's ordered draw queue, sampled while a sampler runs. */
+  let sampler = null;
+  c.startQueueSampler = () => { c.queueMax = 0; c.queueSamples = 0; c.queueSum = 0; if (sampler) clearInterval(sampler); sampler = setInterval(() => { const sc = window.spice_connection; const n = sc && sc.display && sc.display.ops ? sc.display.ops.length : 0; c.queueSamples++; c.queueSum += n; if (n > c.queueMax) c.queueMax = n; }, 4); };
+  c.stopQueueSampler = () => { if (sampler) clearInterval(sampler); sampler = null; };
   const addL = document.addEventListener.bind(document), removeL = document.removeEventListener.bind(document);
   document.addEventListener = (t, fn, o) => { if (t === 'paste') c.pasteListeners++; return addL(t, fn, o); };
   document.removeEventListener = (t, fn, o) => { if (t === 'paste') c.pasteListeners--; return removeL(t, fn, o); };
@@ -146,8 +153,10 @@ export const COUNTER_SCRIPT = `
   }
   const P = CanvasRenderingContext2D.prototype;
   const put = P.putImageData, draw = P.drawImage, get = P.getImageData;
-  P.putImageData = function (d, x, y, dx, dy, dw, dh) { c.putImageData++; c.putPixels += (dw === undefined ? d.width * d.height : Math.abs(dw * dh)); return arguments.length > 3 ? put.call(this, d, x, y, dx, dy, dw, dh) : put.call(this, d, x, y); };
-  P.drawImage = function (...a) { c.drawImage++; return draw.apply(this, a); };
+  const fill = P.fillRect;
+  P.fillRect = function (...a) { stamp(); return fill.apply(this, a); };
+  P.putImageData = function (d, x, y, dx, dy, dw, dh) { stamp(); c.putImageData++; c.putPixels += (dw === undefined ? d.width * d.height : Math.abs(dw * dh)); return arguments.length > 3 ? put.call(this, d, x, y, dx, dy, dw, dh) : put.call(this, d, x, y); };
+  P.drawImage = function (...a) { stamp(); c.drawImage++; return draw.apply(this, a); };
   P.getImageData = function (x, y, w, h, o) { c.getImageData++; c.getPixels += w * h; return get.call(this, x, y, w, h, o); };
   if (window.PerformanceObserver) {
     try {
@@ -175,6 +184,10 @@ export interface Counters {
   drawImage: number;
   getImageData: number;
   getPixels: number;
+  firstDrawAt: number;
+  queueMax: number;
+  queueSamples: number;
+  queueSum: number;
   /* WebSocket messages delivered to the page, and their bytes. */
   wsMessages: number;
   wsBytes: number;
@@ -264,6 +277,20 @@ export class SpiceClient {
     expect(p, `pixel (${x},${y})`).not.toBeNull();
     const off = Math.max(...p!.map((v, i) => Math.abs(v - rgb[i])));
     expect(off, `pixel (${x},${y}) is ${p!.join(",")}, wanted ${rgb.join(",")}`).toBeLessThanOrEqual(tolerance);
+  }
+
+  /* Resets the first-paint stamp and starts sampling the draw queue. */
+  startMeasure() {
+    return this.page.evaluate(() => {
+      const c = (window as unknown as { __counters: { markDraws: () => void; startQueueSampler: () => void } }).__counters;
+      c.markDraws();
+      c.startQueueSampler();
+      return performance.now();
+    });
+  }
+
+  stopMeasure() {
+    return this.page.evaluate(() => (window as unknown as { __counters: { stopQueueSampler: () => void } }).__counters.stopQueueSampler());
   }
 
   counters(): Promise<Counters> {
