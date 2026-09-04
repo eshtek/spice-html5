@@ -31,6 +31,8 @@ const h = {
   successes: [],
   agentCalls: 0,
   volumes: [],
+  states: [],
+  modifiers: [],
   connect(opts) {
     const uri = opts.uri || ('ws://' + location.host + '/spice');
     return new Promise((resolve, reject) => {
@@ -56,6 +58,9 @@ const h = {
           disable_effects: opts.disable_effects,
           color_depth: opts.color_depth,
           coalesce_motion: opts.coalesce_motion,
+          onstate(s) { h.states.push(s); },
+          onmodifiers(m) { h.modifiers.push(m); },
+          sync_lock_keys: opts.sync_lock_keys,
         });
         window.spice_connection = h.sc;
       } catch (e) {

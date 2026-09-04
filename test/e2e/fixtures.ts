@@ -174,6 +174,22 @@ export interface ConnectOptions {
   disable_effects?: string[];
   color_depth?: number;
   coalesce_motion?: boolean;
+  sync_lock_keys?: boolean;
+}
+
+export interface StateEvent {
+  channel: number;
+  name: string;
+  id: number;
+  state: string;
+  detail?: { code?: number; reason?: string; clean?: boolean };
+}
+
+export interface Modifiers {
+  scroll_lock: boolean;
+  num_lock: boolean;
+  caps_lock: boolean;
+  raw: number;
 }
 
 export interface Counters {
@@ -251,6 +267,28 @@ export class SpiceClient {
 
   volumes() {
     return this.page.evaluate(() => (window as unknown as { harness: { volumes: Array<{ playback: boolean; mute: boolean; level: number; volumes: number[] }> } }).harness.volumes);
+  }
+
+  states() {
+    return this.page.evaluate(() => (window as unknown as { harness: { states: StateEvent[] } }).harness.states);
+  }
+
+  modifiers() {
+    return this.page.evaluate(() => (window as unknown as { harness: { modifiers: Modifiers[] } }).harness.modifiers);
+  }
+
+  /* A key press the client sees as coming from a keyboard with the given
+     lock keys lit; page.keyboard cannot set those. */
+  pressWithLocks(code: string, keyCode: number, locks: { NumLock?: boolean; CapsLock?: boolean; ScrollLock?: boolean }) {
+    return this.page.evaluate(
+      ([code, keyCode, locks]) => {
+        const c = document.querySelector("#spice-screen canvas") as HTMLCanvasElement;
+        const init = { code, keyCode, bubbles: true, cancelable: true, modifierNumLock: locks.NumLock, modifierCapsLock: locks.CapsLock, modifierScrollLock: locks.ScrollLock } as KeyboardEventInit;
+        c.dispatchEvent(new KeyboardEvent("keydown", init));
+        c.dispatchEvent(new KeyboardEvent("keyup", init));
+      },
+      [code, keyCode, locks] as const,
+    );
   }
 
   channelStates() {

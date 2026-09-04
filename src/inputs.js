@@ -73,7 +73,7 @@ SpiceInputsConn.prototype.process_channel_message = function(msg)
         var inputs_init = new Messages.SpiceMsgInputsInit(msg.data);
         this.keyboard_modifiers = inputs_init.keyboard_modifiers;
         DEBUG > 1 && console.log("MsgInputsInit - modifier " + this.keyboard_modifiers);
-        // FIXME - We don't do anything with the keyboard modifiers...
+        report_modifiers(this);
         return true;
     }
     if (msg.type == Constants.SPICE_MSG_INPUTS_KEY_MODIFIERS)
@@ -81,7 +81,7 @@ SpiceInputsConn.prototype.process_channel_message = function(msg)
         var key = new Messages.SpiceMsgInputsKeyModifiers(msg.data);
         this.keyboard_modifiers = key.keyboard_modifiers;
         DEBUG > 1 && console.log("MsgInputsKeyModifiers - modifier " + this.keyboard_modifiers);
-        // FIXME - We don't do anything with the keyboard modifiers...
+        report_modifiers(this);
         return true;
     }
     if (msg.type == Constants.SPICE_MSG_INPUTS_MOUSE_MOTION_ACK)
@@ -269,6 +269,7 @@ function handle_keydown(e)
     var key = new Messages.SpiceMsgcKeyDown(e)
     var msg = new Messages.SpiceMiniData();
     check_and_update_modifiers(e, key.code, this.sc);
+    sync_lock_keys(e, this.sc);
     msg.build_msg(Constants.SPICE_MSGC_INPUTS_KEY_DOWN, key);
     if (this.sc && this.sc.inputs && this.sc.inputs.state === "ready")
         this.sc.inputs.send_msg(msg);
@@ -313,6 +314,71 @@ function sendCtrlAltDel(sc)
         if(Ctrl_state !== true) update_modifier(false, KeyNames.KEY_LCtrl, sc);
         if(Alt_state !== true) update_modifier(false, KeyNames.KEY_Alt, sc);
     }
+}
+
+/* The guest's lock-key state, as the server last reported it.  The
+   report also clears the pending marks of any sync presses, since the
+   guest has now said where it stands. */
+function report_modifiers(inputs)
+{
+    inputs.lock_pending = {};
+    var cb = inputs.parent !== undefined ? inputs.parent.onmodifiers : undefined;
+    if (cb === undefined)
+        return;
+    var m = inputs.keyboard_modifiers;
+    cb({ scroll_lock: !!(m & Constants.SPICE_KEYBOARD_MODIFIER_FLAGS_SCROLL_LOCK),
+         num_lock: !!(m & Constants.SPICE_KEYBOARD_MODIFIER_FLAGS_NUM_LOCK),
+         caps_lock: !!(m & Constants.SPICE_KEYBOARD_MODIFIER_FLAGS_CAPS_LOCK),
+         raw: m }, inputs.parent);
+}
+
+var LOCK_KEYS = [
+    { name: "NumLock", flag: Constants.SPICE_KEYBOARD_MODIFIER_FLAGS_NUM_LOCK, code: KeyNames.KEY_NumLock },
+    { name: "CapsLock", flag: Constants.SPICE_KEYBOARD_MODIFIER_FLAGS_CAPS_LOCK, code: KeyNames.KEY_CapsLock },
+    { name: "ScrollLock", flag: Constants.SPICE_KEYBOARD_MODIFIER_FLAGS_SCROLL_LOCK, code: KeyNames.KEY_ScrollLock },
+];
+/* How long a sync press waits for the server's report before another
+   is allowed: a guest that never reports gets one press per lock key
+   per burst of typing rather than one per keystroke. */
+var LOCK_SYNC_SETTLE_MS = 2000;
+
+/* Before a keystroke goes to the guest, bring the guest's lock keys
+   into line with the browser's where the two are known to differ.
+   Opt-in: a lock key set inside the guest by other means would
+   otherwise be undone at the next keystroke.  The lock keys
+   themselves are exempt, since pressing one toggles both sides. */
+function sync_lock_keys(e, sc)
+{
+    if (! sc || ! sc.sync_lock_keys || ! inputs_live(sc))
+        return;
+    var inputs = sc.inputs;
+    if (inputs.keyboard_modifiers === undefined || typeof e.getModifierState != "function")
+        return;
+    var i, lock;
+    for (i = 0; i < LOCK_KEYS.length; i++)
+        if (e.code === LOCK_KEYS[i].name)
+            return;
+    var now = Date.now();
+    inputs.lock_pending = inputs.lock_pending || {};
+    for (i = 0; i < LOCK_KEYS.length; i++)
+    {
+        lock = LOCK_KEYS[i];
+        var want = e.getModifierState(lock.name);
+        var have = !!(inputs.keyboard_modifiers & lock.flag);
+        if (want === have || inputs.lock_pending[lock.name] > now)
+            continue;
+        inputs.lock_pending[lock.name] = now + LOCK_SYNC_SETTLE_MS;
+        /* Optimistic; the server's report will say for sure. */
+        inputs.keyboard_modifiers ^= lock.flag;
+        send_scancode(sc, lock.code, true);
+        window.setTimeout(release_lock_key, KEY_HOLD_MS, sc, lock.code);
+    }
+}
+
+function release_lock_key(sc, code)
+{
+    if (inputs_live(sc))
+        send_scancode(sc, code, false);
 }
 
 function update_modifier(state, code, sc)

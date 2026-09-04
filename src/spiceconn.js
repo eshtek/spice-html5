@@ -95,8 +95,14 @@ function SpiceConn(o)
         this.color_depth = o.color_depth;
     if (o.coalesce_motion !== undefined)
         this.coalesce_motion = o.coalesce_motion;
+    if (o.onstate !== undefined)
+        this.onstate = o.onstate;
+    if (o.onmodifiers !== undefined)
+        this.onmodifiers = o.onmodifiers;
+    if (o.sync_lock_keys !== undefined)
+        this.sync_lock_keys = o.sync_lock_keys;
 
-    this.state = "connecting";
+    this.set_state("connecting");
     this.ws.parent = this;
     this.wire_reader = new SpiceWireReader(this, this.process_inbound);
     this.messages_sent = 0;
@@ -111,7 +117,7 @@ function SpiceConn(o)
         ***********************************************************************/
         this.parent.send_hdr();
         this.parent.wire_reader.request(SpiceLinkHeader.prototype.buffer_size());
-        this.parent.state = "start";
+        this.parent.set_state("start");
     });
     this.ws.addEventListener('error', function(e) {
         if ('url' in e.target) {
@@ -120,6 +126,8 @@ function SpiceConn(o)
         this.parent.report_error(e);
     });
     this.ws.addEventListener('close', function(e) {
+        /* The block below reuses e for its Error; keep the socket's word. */
+        var closed = { code: e.code, reason: e.reason, clean: e.wasClean };
         DEBUG > 0 && console.log(">> WebSockets.onclose");
         DEBUG > 0 && console.log("id " + this.parent.connection_id +"; type " + this.parent.type);
         DEBUG > 0 && console.log(e);
@@ -138,6 +146,10 @@ function SpiceConn(o)
             this.parent.onerror(e);
             this.parent.log_err(e.toString());
         }
+        /* An error is already the last word on this channel; anything
+           else ends as closed, with the socket's own account of why. */
+        if (this.parent.state != "error")
+            this.parent.set_state("closed", closed);
     });
 
     if (this.ws.readyState == 2 || this.ws.readyState == 3)
@@ -281,7 +293,7 @@ SpiceConn.prototype =
             this.reply_hdr = new SpiceLinkHeader(mb);
             if (this.reply_hdr.magic != Constants.SPICE_MAGIC)
             {
-                this.state = "error";
+                this.set_state("error");
                 var e = new Error('Error: magic mismatch: ' + this.reply_hdr.magic);
                 this.report_error(e);
             }
@@ -289,7 +301,7 @@ SpiceConn.prototype =
             {
                 // FIXME - Determine major/minor version requirements
                 this.wire_reader.request(this.reply_hdr.size);
-                this.state = "link";
+                this.set_state("link");
             }
         }
 
@@ -299,14 +311,14 @@ SpiceConn.prototype =
              // FIXME - Screen the caps - require minihdr at least, right?
             if (this.reply_link.error)
             {
-                this.state = "error";
+                this.set_state("error");
                 var e = new Error('Error: reply link error ' + this.reply_link.error);
                 this.report_error(e);
             }
             else
             {
                 this.send_ticket(rsa_encrypt(this.reply_link.pub_key, this.password + String.fromCharCode(0)));
-                this.state = "ticket";
+                this.set_state("ticket");
                 this.wire_reader.request(SpiceLinkAuthReply.prototype.buffer_size());
             }
         }
@@ -329,7 +341,7 @@ SpiceConn.prototype =
                     if (this.send_preferred_compression)
                         this.send_preferred_compression();
                 }
-                this.state = "ready";
+                this.set_state("ready");
                 this.wire_reader.request(SpiceMiniData.prototype.buffer_size());
                 if (this.timeout)
                 {
@@ -339,7 +351,7 @@ SpiceConn.prototype =
             }
             else
             {
-                this.state = "error";
+                this.set_state("error");
                 if (this.auth_reply.auth_code == Constants.SPICE_LINK_ERR_PERMISSION_DENIED)
                 {
                     var e = new Error("Permission denied.");
@@ -544,12 +556,29 @@ SpiceConn.prototype =
             this.onsuccess(m);
     },
 
+    /* Every state change on every channel reaches the application's
+       onstate, on the main connection, as { channel, name, id, state,
+       detail }: connecting, start, link, ticket, ready, error, closing,
+       closed.  The channel itself is the second argument. */
+    set_state: function(state, detail)
+    {
+        if (this.state === state)
+            return;
+        this.state = state;
+        var cb = this.onstate !== undefined ? this.onstate :
+                 (this.parent !== undefined ? this.parent.onstate : undefined);
+        if (cb === undefined)
+            return;
+        cb({ channel: this.type, name: Constants.SPICE_CHANNEL_NAMES[this.type] || ("channel" + this.type),
+             id: this.chan_id, state: state, detail: detail }, this);
+    },
+
     cleanup: function()
     {
         /* Deliberate teardown: without this the ws close event arrives
            with a live state and reports "Unexpected close" through
            onerror. */
-        this.state = "closing";
+        this.set_state("closing");
         if (this.timeout)
         {
             window.clearTimeout(this.timeout);
@@ -572,7 +601,7 @@ SpiceConn.prototype =
            report so the socket dies even if report_error throws; the
            error state also keeps the close event from double-reporting. */
         this.cleanup();
-        this.state = "error";
+        this.set_state("error");
         this.report_error(e);
     },
 }

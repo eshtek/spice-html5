@@ -80,6 +80,18 @@ import { resize_helper, handle_resize } from './resize.js';
 **                                  at most once per animation frame and the
 **                                  newest position is never dropped.  false
 **                                  sends every event and drops the excess.
+**          onstate     (optional)  If given, called on every channel state
+**                                  change with { channel, name, id, state,
+**                                  detail } and the channel: connecting,
+**                                  start, link, ticket, ready, error, closing,
+**                                  closed (detail: the socket's close code).
+**          onmodifiers (optional)  If given, called with the guest's lock-key
+**                                  state { scroll_lock, num_lock, caps_lock,
+**                                  raw } whenever the server reports it.
+**          sync_lock_keys (optional)  If true, a keystroke whose Num, Caps
+**                                  or Scroll Lock state differs from the
+**                                  guest's is preceded by a press of that
+**                                  lock key, so both sides agree.
 **
 **  Throws error if there are troubles.  Requires a modern (by 2012 standards)
 **      browser, including WebSocket and WebSocket.binaryType == arraybuffer
@@ -375,7 +387,7 @@ SpiceMainConn.prototype.process_channel_message = function(msg)
 
 SpiceMainConn.prototype.stop = function(msg)
 {
-    this.state = "closing";
+    this.set_state("closing");
 
     if (this.inputs)
     {
