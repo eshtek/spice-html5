@@ -575,7 +575,9 @@ function composite_layer(index, image_data, origin, transform, repeat, filter, w
     ctx.clearRect(0, 0, w, h);
     var operand = composite_canvas(2, image_data.width, image_data.height, true);
     operand.getContext("2d").putImageData(image_data, 0, 0);
-    ctx.imageSmoothingEnabled = filter != 0;
+    /* pixman_filter_t: FAST 0, GOOD 1, BEST 2, NEAREST 3, BILINEAR 4;
+       FAST and NEAREST pick a pixel, the rest interpolate. */
+    ctx.imageSmoothingEnabled = filter != 0 && filter != 3;
     var t = transform || [1, 0, 0, 0, 1, 0];
     /* t maps (x + ox, y + oy) to operand space: [t0 t1 t2; t3 t4 t5]. */
     var det = t[0] * t[4] - t[1] * t[3];
