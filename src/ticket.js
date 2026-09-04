@@ -34,6 +34,10 @@ var SHA_DIGEST_LENGTH = 20;
 /*----------------------------------------------------------------------------
 **  OAEP padding functions.  Inspired by the OpenSSL implementation.
 **--------------------------------------------------------------------------*/
+
+/* Fills mask with MGF1-SHA1 of seed (RFC 8017 B.2.1).  Returns 0, as
+   OpenSSL's PKCS1_MGF1 does on success; its -1 is for a digest that
+   fails, which this SHA-1 cannot, so the callers' checks never fire. */
 function MGF1(mask, seed)
 {
     var i, j, outlen;
@@ -54,6 +58,7 @@ function MGF1(mask, seed)
             mask[outlen] = combo_hash.charCodeAt(j);
         }
     }
+    return 0;
 }
 
 
@@ -263,6 +268,7 @@ function rsa_encrypt(rsa, str)
 }
 
 export {
+  MGF1,
   create_rsa_from_mb,
   rsa_encrypt,
 };
