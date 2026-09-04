@@ -50,3 +50,26 @@ test("loop mode plays the recording again after it ends", async ({ client, spice
   expect(await client.errors()).toEqual([]);
   expect((await spice.state()).log.filter((l) => l === "replay: loop").length).toBeGreaterThanOrEqual(2);
 });
+
+/* The same Ubuntu guest after the client asked for LZ4: every fresh image
+   arrives as type 109, and the replay must stay free of unhandled draws. */
+test("the goldeye LZ4 recording paints the desktop from LZ4 images alone", async ({ client, spice }) => {
+  await spice.reset({ replay: "fixtures/goldeye-ubuntu2004-xf86qxl-lz4.rec.json" });
+  await client.connectReady({ channels: ["display", "inputs", "cursor"] });
+  await expect
+    .poll(
+      () =>
+        client.page.evaluate(() => {
+          const c = document.getElementById("spice_surface_0") as HTMLCanvasElement | null;
+          if (!c) return 0;
+          const d = c.getContext("2d")!.getImageData(0, 0, c.width, c.height).data;
+          let lit = 0;
+          for (let i = 0; i < d.length; i += 4) if (d[i] + d[i + 1] + d[i + 2] > 30) lit++;
+          return Math.round((100 * lit) / (c.width * c.height));
+        }),
+      { timeout: 20_000 },
+    )
+    .toBeGreaterThanOrEqual(60);
+  expect(await client.errors()).toEqual([]);
+  expect((await client.messages()).filter((m) => /Unknown message|FIXME|unhandled/i.test(m))).toEqual([]);
+});
