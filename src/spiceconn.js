@@ -85,6 +85,12 @@ function SpiceConn(o)
         this.onsuccess = o.onsuccess;
     if (o.onagent !== undefined)
         this.onagent = o.onagent;
+    if (o.onvolume !== undefined)
+        this.onvolume = o.onvolume;
+    if (o.disable_effects !== undefined)
+        this.disable_effects = o.disable_effects;
+    if (o.color_depth !== undefined)
+        this.color_depth = o.color_depth;
 
     this.state = "connecting";
     this.ws.parent = this;

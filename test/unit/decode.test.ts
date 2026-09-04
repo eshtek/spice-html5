@@ -31,12 +31,12 @@ test("key down", () => {
 });
 
 test("mouse position and press", () => {
-  const pos = new SpiceMsgcMousePosition({ buttons_state: 0 }, { offsetX: 120, offsetY: 45 });
+  const pos = new SpiceMsgcMousePosition(120, 45, 0);
   const m = viaWire(C.SPICE_CHANNEL_INPUTS, C.SPICE_MSGC_INPUTS_MOUSE_POSITION, pos);
   expect(m.name).toBe("mouse_position");
   expect(m.fields).toMatchObject({ x: 120, y: 45, buttonsState: 0, displayId: 0 });
 
-  const press = new SpiceMsgcMousePress({}, { button: 2 });
+  const press = new SpiceMsgcMousePress(3, 4);
   const p = viaWire(C.SPICE_CHANNEL_INPUTS, C.SPICE_MSGC_INPUTS_MOUSE_PRESS, press);
   expect(p.fields).toMatchObject({ button: 3, buttonsState: 4 });
 });

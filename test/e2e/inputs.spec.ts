@@ -140,3 +140,38 @@ test("server mouse mode sends relative motion", async ({ client, spice }) => {
   await client.page.mouse.move(bb.x + 110, bb.y + 95);
   await expect.poll(async () => (await spice.inbound("inputs", "mouse_motion", before)).map((m) => [m.fields.x, m.fields.y])).toEqual([[10, -5]]);
 });
+
+test("server mouse mode measures motion from where the server last put the pointer", async ({ client, spice }) => {
+  await client.disconnect();
+  await spice.reset({ mouseModes: { supported: 1, current: 1 } });
+  await client.connectReady();
+  await spice.send("display", "surfaceCreate", { width: 320, height: 240 });
+  const bb = (await client.surface().boundingBox())!;
+  await client.page.mouse.move(bb.x + 100, bb.y + 100);
+  await spice.waitFor("inputs", "mouse_motion");
+  /* The guest warps its pointer to (40, 60); the next motion is relative to that. */
+  await spice.send("cursor", "cursorMove", { x: 40, y: 60 });
+  await client.page.waitForTimeout(100);
+  const before = await spice.mark();
+  await client.page.mouse.move(bb.x + 110, bb.y + 95);
+  /* The canvas sits at a fractional page offset, so allow a pixel. */
+  await expect.poll(async () => (await spice.inbound("inputs", "mouse_motion", before)).length).toBe(1);
+  const [m] = await spice.inbound("inputs", "mouse_motion", before);
+  expect(Math.abs((m.fields.x as number) - 70)).toBeLessThanOrEqual(1);
+  expect(Math.abs((m.fields.y as number) - 35)).toBeLessThanOrEqual(1);
+});
+
+test("a held button is carried in the motion that follows", async ({ client, spice }) => {
+  const bb = (await client.surface().boundingBox())!;
+  await client.page.mouse.move(bb.x + 50, bb.y + 50);
+  await client.page.mouse.down();
+  await spice.waitFor("inputs", "mouse_press");
+  const before = await spice.mark();
+  await client.page.mouse.move(bb.x + 60, bb.y + 60);
+  await expect.poll(async () => (await spice.inbound("inputs", "mouse_position", before)).map((m) => m.fields.buttonsState)).toEqual([1]);
+  await client.page.mouse.up();
+  await spice.waitFor("inputs", "mouse_release");
+  const after = await spice.mark();
+  await client.page.mouse.move(bb.x + 70, bb.y + 70);
+  await expect.poll(async () => (await spice.inbound("inputs", "mouse_position", after)).map((m) => m.fields.buttonsState)).toEqual([0]);
+});

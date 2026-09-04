@@ -83,6 +83,12 @@ export function agentData(type: number, payload: Uint8Array) {
 }
 
 /* VDAgentAnnounceCapabilities: request u32 + one u32 of caps. */
+export function agentAudioVolumeSync(a: { playback?: boolean; mute?: boolean; volumes: number[] }) {
+  const w = new Writer().u8(a.playback === false ? 0 : 1).u8(a.mute ? 1 : 0).u8(a.volumes.length);
+  for (const v of a.volumes) w.u16(v);
+  return agentData(C.VD_AGENT_AUDIO_VOLUME_SYNC, w.toBytes());
+}
+
 export function agentAnnounceCapabilities(caps: number, request = 0) {
   return agentData(C.VD_AGENT_ANNOUNCE_CAPABILITIES, new Writer().u32(request).u32(caps).toBytes());
 }
@@ -471,7 +477,18 @@ export function decodeClient(channelType: number, type: number, data: Uint8Array
       fields.agentType = r.u32();
       fields.opaque = Number(r.u64());
       fields.size = r.u32();
-      fields.data = Array.from(r.rest());
+      const payload = Array.from(r.rest());
+      fields.data = payload;
+      if (fields.agentType === C.VD_AGENT_ANNOUNCE_CAPABILITIES && payload.length >= 8) {
+        const a = new Reader(Uint8Array.from(payload));
+        fields.request = a.u32();
+        fields.caps = a.u32();
+      }
+      if (fields.agentType === C.VD_AGENT_DISPLAY_CONFIG && payload.length >= 8) {
+        const a = new Reader(Uint8Array.from(payload));
+        fields.flags = a.u32();
+        fields.depth = a.u32();
+      }
       break;
     case "agent_token":
       fields.tokens = r.u32();

@@ -198,13 +198,13 @@ export class SpiceClient {
   }
 
   /* Resolves with the onsuccess payload, rejects with the onerror message. */
-  connect(opts: { password?: string; uri?: string } = {}) {
+  connect(opts: { password?: string; uri?: string; disable_effects?: string[]; color_depth?: number } = {}) {
     return this.page.evaluate((o) => (window as unknown as { harness: { connect: (o: unknown) => Promise<string> } }).harness.connect(o), opts);
   }
 
   /* Connects and waits until every default child channel is ready. */
-  async connectReady(opts: { password?: string; channels?: string[] } = {}) {
-    await this.connect({ password: opts.password });
+  async connectReady(opts: { password?: string; channels?: string[]; disable_effects?: string[]; color_depth?: number } = {}) {
+    await this.connect({ password: opts.password, disable_effects: opts.disable_effects, color_depth: opts.color_depth });
     const channels = opts.channels ?? ["display", "inputs", "cursor"];
     await this.page.waitForFunction(
       (names) => {
@@ -223,6 +223,10 @@ export class SpiceClient {
 
   errors() {
     return this.page.evaluate(() => (window as unknown as { harness: { errors: string[] } }).harness.errors);
+  }
+
+  volumes() {
+    return this.page.evaluate(() => (window as unknown as { harness: { volumes: Array<{ playback: boolean; mute: boolean; level: number; volumes: number[] }> } }).harness.volumes);
   }
 
   channelStates() {

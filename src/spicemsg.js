@@ -640,6 +640,42 @@ VDAgentAnnounceCapabilities.prototype =
     }
 }
 
+function VDAgentDisplayConfig(flags, depth)
+{
+    this.flags = flags;
+    this.depth = depth || 0;
+}
+
+VDAgentDisplayConfig.prototype =
+{
+    to_buffer: function(a, at)
+    {
+        at = at || 0;
+        var dv = new DataView(a);
+        dv.setUint32(at, this.flags, true); at += 4;
+        dv.setUint32(at, this.depth, true); at += 4;
+        return at;
+    },
+    buffer_size: function()
+    {
+        return 8;
+    }
+}
+
+/* The guest's mixer: is_playback says which direction, volume holds one
+   0..65535 level per channel. */
+function VDAgentAudioVolumeSync(a, at)
+{
+    at = at || 0;
+    var dv = new DataView(a);
+    this.is_playback = dv.getUint8(at); at++;
+    this.mute = dv.getUint8(at); at++;
+    this.nchannels = dv.getUint8(at); at++;
+    this.volume = [];
+    for (var i = 0; i < this.nchannels && at + 2 <= a.byteLength; i++, at += 2)
+        this.volume.push(dv.getUint16(at, true));
+}
+
 function VDAgentMonitorsConfig(flags, width, height, depth, x, y)
 {
     this.num_mon = 1;
@@ -1161,23 +1197,15 @@ SpiceMsgCursorSet.prototype =
 }
 
 
-function SpiceMsgcMousePosition(sc, e)
+/* Mouse messages carry values only; inputs.js tracks the pointer and the
+   buttons, since the cursor channel updates the same state when the
+   server warps the pointer. */
+function SpiceMsgcMousePosition(x, y, buttons_state, display_id)
 {
-    // FIXME - figure out how to correctly compute display_id
-    this.display_id = 0;
-    this.buttons_state = sc.buttons_state;
-    if (e)
-    {
-        this.x = e.offsetX;
-        this.y = e.offsetY;
-
-        sc.mousex = e.offsetX;
-        sc.mousey = e.offsetY;
-    }
-    else
-    {
-        this.x = this.y = this.buttons_state = 0;
-    }
+    this.x = x || 0;
+    this.y = y || 0;
+    this.buttons_state = buttons_state || 0;
+    this.display_id = display_id || 0;
 }
 
 SpiceMsgcMousePosition.prototype =
@@ -1198,47 +1226,19 @@ SpiceMsgcMousePosition.prototype =
     }
 }
 
-function SpiceMsgcMouseMotion(sc, e)
+/* Relative: x and y are the movement since the last motion. */
+function SpiceMsgcMouseMotion(dx, dy, buttons_state, display_id)
 {
-    // FIXME - figure out how to correctly compute display_id
-    this.display_id = 0;
-    this.buttons_state = sc.buttons_state;
-    if (e)
-    {
-        this.x = e.offsetX;
-        this.y = e.offsetY;
-
-        if (sc.mousex !== undefined)
-        {
-            this.x -= sc.mousex;
-            this.y -= sc.mousey;
-        }
-        sc.mousex = e.offsetX;
-        sc.mousey = e.offsetY;
-    }
-    else
-    {
-        this.x = this.y = this.buttons_state = 0;
-    }
+    SpiceMsgcMousePosition.call(this, dx, dy, buttons_state, display_id);
 }
 
-/* Use the same functions as for MousePosition */
 SpiceMsgcMouseMotion.prototype.to_buffer = SpiceMsgcMousePosition.prototype.to_buffer;
 SpiceMsgcMouseMotion.prototype.buffer_size = SpiceMsgcMousePosition.prototype.buffer_size;
 
-function SpiceMsgcMousePress(sc, e)
+function SpiceMsgcMousePress(button, buttons_state)
 {
-    if (e)
-    {
-        this.button = e.button + 1;
-        this.buttons_state = 1 << e.button;
-        sc.buttons_state = this.buttons_state;
-    }
-    else
-    {
-        this.button = Constants.SPICE_MOUSE_BUTTON_LEFT;
-        this.buttons_state = Constants.SPICE_MOUSE_BUTTON_MASK_LEFT;
-    }
+    this.button = button !== undefined ? button : Constants.SPICE_MOUSE_BUTTON_LEFT;
+    this.buttons_state = buttons_state !== undefined ? buttons_state : Constants.SPICE_MOUSE_BUTTON_MASK_LEFT;
 }
 
 SpiceMsgcMousePress.prototype =
@@ -1257,19 +1257,10 @@ SpiceMsgcMousePress.prototype =
     }
 }
 
-function SpiceMsgcMouseRelease(sc, e)
+function SpiceMsgcMouseRelease(button, buttons_state)
 {
-    if (e)
-    {
-        this.button = e.button + 1;
-        this.buttons_state = 0;
-        sc.buttons_state = this.buttons_state;
-    }
-    else
-    {
-        this.button = Constants.SPICE_MOUSE_BUTTON_LEFT;
-        this.buttons_state = 0;
-    }
+    this.button = button !== undefined ? button : Constants.SPICE_MOUSE_BUTTON_LEFT;
+    this.buttons_state = buttons_state || 0;
 }
 
 /* Use the same functions as for MousePress */
@@ -1579,6 +1570,8 @@ export {
   SpiceMsgcMainAgentData,
   VDAgentAnnounceCapabilities,
   VDAgentMonitorsConfig,
+  VDAgentDisplayConfig,
+  VDAgentAudioVolumeSync,
   VDAgentFileXferStatusMessage,
   VDAgentFileXferStartMessage,
   VDAgentFileXferDataMessage,
