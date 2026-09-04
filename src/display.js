@@ -710,7 +710,7 @@ SpiceDisplayConn.prototype.process_channel_message = function(msg)
         var copy_rop = ropd_to_rop(draw_copy.data.rop_descriptor, ROP_INPUT_SRC, ROP_INPUT_DEST);
         if (copy_rop == ROP.NOOP)
             return true;
-        this.copy_extras = { rop: copy_rop, mask: this.decode_mask("DrawCopy", draw_copy.data.mask) };
+        var copy_mask = this.decode_mask("DrawCopy", draw_copy.data.mask);
 
         if (draw_copy.data && draw_copy.data.src_bitmap)
         {
@@ -733,7 +733,7 @@ SpiceDisplayConn.prototype.process_channel_message = function(msg)
                                         draw_copy.data.src_bitmap.quic);
 
                 return this.draw_copy_helper(
-                    { base: draw_copy.base,
+                    { base: draw_copy.base, rop: copy_rop, mask: copy_mask,
                       src_area: draw_copy.data.src_area,
                       image_data: source_img,
                       tag: "copyquic." + draw_copy.data.src_bitmap.quic.type,
@@ -751,7 +751,7 @@ SpiceDisplayConn.prototype.process_channel_message = function(msg)
                 var cache_id = draw_copy.data.src_bitmap.descriptor.id;
                 var sc = this;
                 return this.draw_copy_helper(
-                    { base: draw_copy.base,
+                    { base: draw_copy.base, rop: copy_rop, mask: copy_mask,
                       src_area: draw_copy.data.src_area,
                       image_data: this.cache ? this.cache[cache_id] : undefined,
                       resolve: function()
@@ -788,7 +788,7 @@ SpiceDisplayConn.prototype.process_channel_message = function(msg)
                 /* The source is read when this op runs, after everything
                    queued for it has been drawn. */
                 return this.draw_copy_helper(
-                    { base: draw_copy.base,
+                    { base: draw_copy.base, rop: copy_rop, mask: copy_mask,
                       src_area: computed_src_area,
                       resolve: function()
                       {
@@ -814,7 +814,7 @@ SpiceDisplayConn.prototype.process_channel_message = function(msg)
 
                 var img = new Image;
                 img.o =
-                    { base: draw_copy.base,
+                    { base: draw_copy.base, rop: copy_rop, mask: copy_mask,
                       tag: "jpeg." + draw_copy.data.src_bitmap.surface_id,
                       descriptor : draw_copy.data.src_bitmap.descriptor,
                       sc : this,
@@ -839,7 +839,7 @@ SpiceDisplayConn.prototype.process_channel_message = function(msg)
 
                 var img = new Image;
                 img.o =
-                    { base: draw_copy.base,
+                    { base: draw_copy.base, rop: copy_rop, mask: copy_mask,
                       tag: "jpeg." + draw_copy.data.src_bitmap.surface_id,
                       descriptor : draw_copy.data.src_bitmap.descriptor,
                       sc : this,
@@ -882,7 +882,7 @@ SpiceDisplayConn.prototype.process_channel_message = function(msg)
                 }
 
                 return this.draw_copy_helper(
-                    { base: draw_copy.base,
+                    { base: draw_copy.base, rop: copy_rop, mask: copy_mask,
                       src_area: draw_copy.data.src_area,
                       image_data: source_img,
                       tag: "bitmap." + draw_copy.data.src_bitmap.bitmap.format,
@@ -911,7 +911,7 @@ SpiceDisplayConn.prototype.process_channel_message = function(msg)
                 }
 
                 return this.draw_copy_helper(
-                    { base: draw_copy.base,
+                    { base: draw_copy.base, rop: copy_rop, mask: copy_mask,
                       src_area: draw_copy.data.src_area,
                       image_data: source_img,
                       tag: "lz_rgb." + draw_copy.data.src_bitmap.lz_rgb.type,
@@ -942,7 +942,7 @@ SpiceDisplayConn.prototype.process_channel_message = function(msg)
 
                 var lz4_format = new Uint8Array(draw_copy.data.src_bitmap.lz4.data)[1];
                 return this.draw_copy_helper(
-                    { base: draw_copy.base,
+                    { base: draw_copy.base, rop: copy_rop, mask: copy_mask,
                       src_area: draw_copy.data.src_area,
                       image_data: source_img,
                       tag: "lz4." + lz4_format,
@@ -1886,12 +1886,6 @@ SpiceDisplayConn.prototype.resolve_source_image = function(tag, image, canvas, s
 SpiceDisplayConn.prototype.draw_copy_helper = function(o)
 {
     o.surface = this.surfaces[o.base.surface_id];
-    if (this.copy_extras)
-    {
-        o.rop = this.copy_extras.rop;
-        o.mask = this.copy_extras.mask;
-        this.copy_extras = undefined;
-    }
 
     /* FIXME - This is based on trial + error, not a serious thoughtful
                analysis of what Spice requires.  See display.js for more. */
@@ -2248,6 +2242,19 @@ function handle_draw_jpeg_onload()
     this.o.sc.mark_ready(this.o.op, function() { draw_jpeg_now(img); });
 }
 
+/* The decoded JPEG under its LZ alpha plane, on a canvas its own size. */
+function jpeg_alpha_canvas(img)
+{
+    var c = document.createElement("canvas");
+    var t = c.getContext("2d");
+    c.setAttribute('width', img.alpha_img.width);
+    c.setAttribute('height', img.alpha_img.height);
+    t.putImageData(img.alpha_img, 0, 0);
+    t.globalCompositeOperation = 'source-in';
+    t.drawImage(img, 0, 0);
+    return c;
+}
+
 /* Runs from the draw queue once every op queued before the JPEG has run. */
 function draw_jpeg_now(img)
 {
@@ -2278,15 +2285,32 @@ function draw_jpeg_now(img)
     var sh = src.bottom - src.top;
     context.imageSmoothingEnabled = o.scale_mode != Constants.SPICE_IMAGE_SCALE_MODE_NEAREST;
 
+    /* A rop other than copy, or a mask, combines the image with what is
+       there pixel by pixel, which draw_copy_now does from an ImageData. */
+    if ((o.rop !== undefined && o.rop != ROP.COPY) || o.mask)
+    {
+        o.image_data = img.alpha_img ?
+            jpeg_alpha_canvas(img).getContext("2d").getImageData(0, 0, img.alpha_img.width, img.alpha_img.height) :
+            image_to_image_data(img, img.width, img.height);
+        o.has_alpha = !! img.alpha_img;
+        o.opaque = ! o.has_alpha || o.surface.format == Constants.SPICE_SURFACE_FMT_32_xRGB;
+        if (o.descriptor && (o.descriptor.flags & Constants.SPICE_IMAGE_FLAGS_CACHE_ME))
+        {
+            if (! ("cache" in sc))
+                sc.cache = {};
+            sc.cache[o.descriptor.id] = o.image_data;
+        }
+        sc.draw_copy_now(o);
+        context.imageSmoothingEnabled = true;
+        img.onload = undefined;
+        img.src = Utils.EMPTY_GIF_IMAGE;
+        return;
+    }
+
     if (img.alpha_img)
     {
-        var c = document.createElement("canvas");
+        var c = jpeg_alpha_canvas(img);
         var t = c.getContext("2d");
-        c.setAttribute('width', img.alpha_img.width);
-        c.setAttribute('height', img.alpha_img.height);
-        t.putImageData(img.alpha_img, 0, 0);
-        t.globalCompositeOperation = 'source-in';
-        t.drawImage(img, 0, 0);
 
         with_clip(context, o.base.clip, function()
         {

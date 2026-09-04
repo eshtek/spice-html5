@@ -580,6 +580,8 @@ export function drawCopyLz4(a: Lz4Args) {
 
 export interface JpegArgs extends DrawCopyBase {
   jpeg: Uint8Array;
+  ropd?: number;
+  mask?: MaskArgs;
   imageWidth?: number;
   imageHeight?: number;
   cacheId?: number;

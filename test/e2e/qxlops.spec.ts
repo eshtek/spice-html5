@@ -59,6 +59,12 @@ test.describe("masks", () => {
     await client.expectPixelStays(16, 12, [...grey]);
   });
 
+  test("a JPEG copy honours its mask", async ({ client, spice }) => {
+    await spice.send("display", "drawCopyJpeg", { box: box(10, 10, 8, 8), mask: halves, image: { kind: "solid", width: 8, height: 8, color: [255, 0, 0] } });
+    await client.expectPixel(11, 12, [255, 0, 0]);
+    await client.expectPixelStays(16, 12, [...grey]);
+  });
+
   test("an inverted mask flips which half", async ({ client, spice }) => {
     await spice.send("display", "drawFill", { box: box(10, 10, 8, 8), color: 0xff0000, mask: { ...halves, invers: true } });
     await client.expectPixel(16, 12, [255, 0, 0]);
