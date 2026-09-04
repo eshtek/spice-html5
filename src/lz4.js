@@ -157,47 +157,7 @@ function convert_spice_lz4_to_web(context, descriptor, lz4)
     var bitmap = decode_spice_lz4(descriptor, lz4);
     if (! bitmap)
         return undefined;
-    if (bitmap.format == Constants.SPICE_BITMAP_FMT_32BIT ||
-        bitmap.format == Constants.SPICE_BITMAP_FMT_RGBA)
-        return convert_spice_bitmap_to_web(context, bitmap);
-
-    /* 24BIT is packed BGR; 16BIT is x1r5g5b5 in little-endian words. */
-    var w = bitmap.x;
-    var h = bitmap.y;
-    var top_down = bitmap.flags & Constants.SPICE_BITMAP_FLAGS_TOP_DOWN;
-    var ret = context.createImageData(w, h);
-    var out = ret.data;
-    var src = new Uint8Array(bitmap.data);
-    var o = 0;
-    for (var y = 0; y < h; y++)
-    {
-        var s = (top_down ? y : h - 1 - y) * bitmap.stride;
-        if (bitmap.format == Constants.SPICE_BITMAP_FMT_24BIT)
-        {
-            for (var x = 0; x < w; x++, o += 4, s += 3)
-            {
-                out[o + 0] = src[s + 2];
-                out[o + 1] = src[s + 1];
-                out[o + 2] = src[s + 0];
-                out[o + 3] = 255;
-            }
-        }
-        else
-        {
-            for (x = 0; x < w; x++, o += 4, s += 2)
-            {
-                var v = src[s] | (src[s + 1] << 8);
-                var r = (v >> 10) & 31;
-                var g = (v >> 5) & 31;
-                var b = v & 31;
-                out[o + 0] = (r << 3) | (r >> 2);
-                out[o + 1] = (g << 3) | (g >> 2);
-                out[o + 2] = (b << 3) | (b >> 2);
-                out[o + 3] = 255;
-            }
-        }
-    }
-    return ret;
+    return convert_spice_bitmap_to_web(context, bitmap);
 }
 
 export {
