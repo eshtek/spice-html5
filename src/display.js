@@ -427,15 +427,31 @@ function rop3_tables(code, color)
     return ROP3_TABLES[key];
 }
 
+/* The same tables, applied to the alpha byte as well (the r table), for
+   a copy onto a surface whose alpha is part of the image. */
+function with_alpha(tables)
+{
+    return { by: tables.by, r: tables.r, g: tables.g, b: tables.b, alpha: true };
+}
+
+/* The r table applied to the alpha byte alone, for an A8 surface. */
+function alpha_only(tables)
+{
+    return { by: tables.by, r: tables.r, g: tables.g, b: tables.b, alpha: true, alpha_only: true };
+}
+
 /* Applies `tables` to the pixels of `rects` (the parts of `box` a draw
    may touch), reading each back from the context and writing it again.
    Source bytes come from source.image_data at the position matching
    the destination pixel through source.src (its src_area) when the
-   tables want them; mask.bits, offset by mask.pos, excludes pixels. */
+   tables want them; mask.bits, offset by mask.pos, excludes pixels.
+   Colour goes through r, g and b; the alpha byte through r as well
+   when tables.alpha is set, and only the alpha byte with alpha_only. */
 function combine_rects(context, box, rects, source, mask, tables)
 {
     var by_sd = tables.by == "sd", by_s = tables.by == "s";
     var tr = tables.r, tg = tables.g, tb = tables.b;
+    var alpha = !! tables.alpha, colour = ! tables.alpha_only;
     var s_data = source ? source.image_data.data : null;
     var s_w = source ? source.image_data.width : 0;
     var s_left = source ? source.src.left : 0;
@@ -470,22 +486,37 @@ function combine_rects(context, box, rects, source, mask, tables)
                 if (by_sd)
                 {
                     var so = (srow + px - box.left + s_left) * 4;
-                    out[o] = tr[(s_data[so] << 8) | out[o]];
-                    out[o + 1] = tg[(s_data[so + 1] << 8) | out[o + 1]];
-                    out[o + 2] = tb[(s_data[so + 2] << 8) | out[o + 2]];
+                    if (colour)
+                    {
+                        out[o] = tr[(s_data[so] << 8) | out[o]];
+                        out[o + 1] = tg[(s_data[so + 1] << 8) | out[o + 1]];
+                        out[o + 2] = tb[(s_data[so + 2] << 8) | out[o + 2]];
+                    }
+                    if (alpha)
+                        out[o + 3] = tr[(s_data[so + 3] << 8) | out[o + 3]];
                 }
                 else if (by_s)
                 {
                     var so = (srow + px - box.left + s_left) * 4;
-                    out[o] = tr[s_data[so]];
-                    out[o + 1] = tg[s_data[so + 1]];
-                    out[o + 2] = tb[s_data[so + 2]];
+                    if (colour)
+                    {
+                        out[o] = tr[s_data[so]];
+                        out[o + 1] = tg[s_data[so + 1]];
+                        out[o + 2] = tb[s_data[so + 2]];
+                    }
+                    if (alpha)
+                        out[o + 3] = tr[s_data[so + 3]];
                 }
                 else
                 {
-                    out[o] = tr[out[o]];
-                    out[o + 1] = tg[out[o + 1]];
-                    out[o + 2] = tb[out[o + 2]];
+                    if (colour)
+                    {
+                        out[o] = tr[out[o]];
+                        out[o + 1] = tg[out[o + 1]];
+                        out[o + 2] = tb[out[o + 2]];
+                    }
+                    if (alpha)
+                        out[o + 3] = tr[out[o + 3]];
                 }
             }
         }
@@ -1218,7 +1249,12 @@ SpiceDisplayConn.prototype.process_channel_message = function(msg)
                 return;
             var ctx = plain_surface.canvas.context;
             var rects = clipped_rects(plain.base.box, plain.base.clip);
-            if (! plain_mask && plain_type != Constants.SPICE_MSG_DISPLAY_DRAW_INVERS)
+            var plain_value = plain_type == Constants.SPICE_MSG_DISPLAY_DRAW_WHITENESS ? 255 : 0;
+            var plain_invert = plain_type == Constants.SPICE_MSG_DISPLAY_DRAW_INVERS;
+            /* On an alpha surface black is clear and white is opaque. */
+            if (plain_surface.format == Constants.SPICE_SURFACE_FMT_8_A)
+                combine_rects(ctx, plain.base.box, rects, null, plain_mask, alpha_only(dest_tables(plain_value, plain_invert)));
+            else if (! plain_mask && ! plain_invert)
             {
                 ctx.fillStyle = plain_type == Constants.SPICE_MSG_DISPLAY_DRAW_WHITENESS ? "#ffffff" : "#000000";
                 for (var i = 0; i < rects.length; i++)
@@ -1226,9 +1262,7 @@ SpiceDisplayConn.prototype.process_channel_message = function(msg)
             }
             else
             {
-                combine_rects(ctx, plain.base.box, rects, null, plain_mask,
-                              dest_tables(plain_type == Constants.SPICE_MSG_DISPLAY_DRAW_WHITENESS ? 255 : 0,
-                                          plain_type == Constants.SPICE_MSG_DISPLAY_DRAW_INVERS));
+                combine_rects(ctx, plain.base.box, rects, null, plain_mask, dest_tables(plain_value, plain_invert));
             }
             plain_surface.draw_count++;
         });
@@ -2021,9 +2055,12 @@ SpiceDisplayConn.prototype.draw_copy_now = function(o)
        there, pixel by pixel. */
     if ((o.rop !== undefined && o.rop != ROP.COPY) || o.mask)
     {
+        /* On a surface whose alpha is part of the image, the alpha byte
+           is combined like the colour; an opaque draw leaves it. */
+        var copy_tables = rop_tables(o.rop === undefined ? ROP.COPY : o.rop);
         combine_rects(canvas.context, o.base.box, clipped_rects(o.base.box, o.base.clip),
                       source_for_box(image_data, src, o.base.box), o.mask,
-                      rop_tables(o.rop === undefined ? ROP.COPY : o.rop));
+                      o.opaque ? copy_tables : with_alpha(copy_tables));
         o.surface.draw_count++;
         return;
     }

@@ -234,7 +234,12 @@ test.describe("composite", () => {
     await spice.send("display", "drawMaskOnly", { type: "blackness", surface: 1, box: box(0, 0, 8, 16) });
     await spice.send("display", "drawMaskOnly", { type: "whiteness", surface: 1, box: box(8, 0, 4, 16), mask: { rows: Array.from({ length: 16 }, () => "##..") } });
     const alpha = (x: number, y: number) =>
-      client.page.evaluate(([x, y]) => (document.getElementById("spice_surface_1") as HTMLCanvasElement).getContext("2d")!.getImageData(x, y, 1, 1).data[3], [x, y]);
+      client.page.evaluate(([x, y]) => {
+        /* Only the primary surface is in the DOM; the rest hang off the display channel. */
+        const w = window as unknown as { spice_connection?: { display?: { surfaces?: Record<number, { canvas: { context: CanvasRenderingContext2D } }> } } };
+        const s = w.spice_connection?.display?.surfaces?.[1];
+        return s ? s.canvas.context.getImageData(x, y, 1, 1).data[3] : -1;
+      }, [x, y]);
     await expect.poll(() => alpha(4, 4)).toBe(0);
     await expect.poll(() => alpha(9, 4)).toBe(255);
     await expect.poll(() => alpha(14, 4)).toBe(255);
@@ -246,7 +251,12 @@ test.describe("composite", () => {
     const clear = Array.from({ length: 256 }, () => [0, 0, 255, 0]).flat();
     await spice.send("display", "drawCopyBitmap", { surface: 1, box: box(0, 0, 16, 16), format: "rgba", pixels: clear, mask: { rows: Array.from({ length: 16 }, () => "########........") } });
     const alpha = (x: number, y: number) =>
-      client.page.evaluate(([x, y]) => (document.getElementById("spice_surface_1") as HTMLCanvasElement).getContext("2d")!.getImageData(x, y, 1, 1).data[3], [x, y]);
+      client.page.evaluate(([x, y]) => {
+        /* Only the primary surface is in the DOM; the rest hang off the display channel. */
+        const w = window as unknown as { spice_connection?: { display?: { surfaces?: Record<number, { canvas: { context: CanvasRenderingContext2D } }> } } };
+        const s = w.spice_connection?.display?.surfaces?.[1];
+        return s ? s.canvas.context.getImageData(x, y, 1, 1).data[3] : -1;
+      }, [x, y]);
     await expect.poll(() => alpha(4, 4)).toBe(0);
     await expect.poll(() => alpha(12, 4)).toBe(255);
   });
