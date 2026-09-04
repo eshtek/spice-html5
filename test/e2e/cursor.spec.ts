@@ -81,3 +81,25 @@ test("a cursor delivered with INIT is shown", async ({ client, spice }) => {
   await spice.send("cursor", "cursorInit", { x: 5, y: 5, shape: { unique: 9, width: 8, height: 8, image: { kind: "solid", width: 8, height: 8, color: [0, 0, 255] } } });
   await expect.poll(() => screenCursor(client)).toMatch(/^url\("?data:image\/png/);
 });
+
+/* A cursor the browser will not take (over 128 px) falls back to an image
+   moved under the pointer. That image lives inside the screen element,
+   which this page centres, so page coordinates would put it off by the
+   screen's offset: the cursor half of upstream issue #14. */
+test("a simulated cursor sits under the pointer on a screen that is not at the page origin", async ({ client, spice }) => {
+  await expect(client.surface()).toBeVisible();
+  await spice.send("cursor", "cursorSet", { shape: { width: 200, height: 200, hotX: 7, hotY: 11, image: { kind: "solid", width: 200, height: 200, color: [255, 0, 0] } } });
+  await expect.poll(() => client.page.locator("#spice-screen img").count()).toBe(1);
+  const bb = (await client.surface().boundingBox())!;
+  await client.page.mouse.move(bb.x + 100, bb.y + 60);
+  await expect
+    .poll(() => client.page.evaluate(() => { const i = document.querySelector("#spice-screen img") as HTMLImageElement; return [parseFloat(i.style.left), parseFloat(i.style.top)]; }))
+    .toEqual([100 - 7, 60 - 11]);
+  /* With the screen scaled, the image is placed in the screen's own units. */
+  await client.page.evaluate(() => { (document.getElementById("spice-screen") as HTMLElement).style.transform = "scale(0.5)"; (document.getElementById("spice-screen") as HTMLElement).style.transformOrigin = "0 0"; });
+  const bb2 = (await client.surface().boundingBox())!;
+  await client.page.mouse.move(bb2.x + 50, bb2.y + 30);
+  await expect
+    .poll(() => client.page.evaluate(() => { const i = document.querySelector("#spice-screen img") as HTMLImageElement; return [Math.round(parseFloat(i.style.left)), Math.round(parseFloat(i.style.top))]; }))
+    .toEqual([100 - 7, 60 - 11]);
+});

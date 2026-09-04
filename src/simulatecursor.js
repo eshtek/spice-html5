@@ -44,12 +44,9 @@ unknown_cursor: function(sha1, curdata)
     if (! SpiceSimulateCursor.warned)
     {
         SpiceSimulateCursor.warned = true;
-        alert("Internet Explorer does not support dynamic cursors.  " +
-              "This page will now simulate cursors with images, " +
-              "which will be imperfect.  We recommend using Chrome or Firefox instead.  " +
-              "\n\nIf you need to use Internet Explorer, you can create a static cursor " +
-              "file for each cursor your application uses.  " +
-              "View the console log for more information on creating static cursors for your environment.");
+        /* Once a modal alert; a console does not stop the session for it. */
+        console.warn("This browser does not take dynamic cursors; cursors will be " +
+                     "simulated with images.  See the console for how to supply static cursor files.");
     }
 
     if (! SpiceSimulateCursor.unknown_cursors[sha1])
@@ -62,21 +59,24 @@ unknown_cursor: function(sha1, curdata)
     }
 },
 
-simulate_cursor: function (spicecursor, cursor, screen, pngstr)
+/* force: the browser cannot show this shape as a CSS cursor (too large),
+   so it is drawn under the pointer without consulting the computed style. */
+simulate_cursor: function (spicecursor, cursor, screen, pngstr, force)
 {
     var cursor_sha = hex_sha1(pngstr + ' ' + cursor.header.hot_spot_x + ' ' + cursor.header.hot_spot_y);
-    if (typeof SpiceSimulateCursor.cursors != 'undefined')
+    if (! force && typeof SpiceSimulateCursor.cursors != 'undefined')
         if (typeof SpiceSimulateCursor.cursors[cursor_sha] != 'undefined')
         {
             var curstr = 'url(' + SpiceSimulateCursor.cursors[cursor_sha] + '), default';
             screen.style.cursor = curstr;
         }
 
-    if (window.getComputedStyle(screen, null).cursor == 'auto')
+    if (force || window.getComputedStyle(screen, null).cursor == 'auto')
     {
-        SpiceSimulateCursor.unknown_cursor(cursor_sha,
-            SpiceSimulateCursor.create_icondir(cursor.header.width, cursor.header.height,
-            cursor.data.byteLength, cursor.header.hot_spot_x, cursor.header.hot_spot_y) + pngstr);
+        if (! force)
+            SpiceSimulateCursor.unknown_cursor(cursor_sha,
+                SpiceSimulateCursor.create_icondir(cursor.header.width, cursor.header.height,
+                cursor.data.byteLength, cursor.header.hot_spot_x, cursor.header.hot_spot_y) + pngstr);
 
         document.getElementById(spicecursor.parent.screen_id).style.cursor = 'none';
         if (! spicecursor.spice_simulated_cursor)
