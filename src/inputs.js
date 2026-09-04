@@ -121,9 +121,19 @@ function handle_mousemove(e)
 
     if (this.sc && this.sc.cursor && this.sc.cursor.spice_simulated_cursor)
     {
-        this.sc.cursor.spice_simulated_cursor.style.display = 'block';
-        this.sc.cursor.spice_simulated_cursor.style.left = e.pageX - this.sc.cursor.spice_simulated_cursor.spice_hot_x + 'px';
-        this.sc.cursor.spice_simulated_cursor.style.top = e.pageY - this.sc.cursor.spice_simulated_cursor.spice_hot_y + 'px';
+        /* The image sits inside the screen element, so it is placed in
+           that element's own coordinates: the pointer's position within
+           its box, undone for any CSS scale on it.  Page coordinates put
+           it off by the screen's offset, and by the scale, on any page
+           that does not draw the screen at the top-left corner. */
+        var sim = this.sc.cursor.spice_simulated_cursor;
+        var screen = sim.spice_screen;
+        var rect = screen.getBoundingClientRect();
+        var scale_x = screen.offsetWidth ? rect.width / screen.offsetWidth : 1;
+        var scale_y = screen.offsetHeight ? rect.height / screen.offsetHeight : 1;
+        sim.style.display = 'block';
+        sim.style.left = (e.clientX - rect.left) / scale_x - sim.spice_hot_x + 'px';
+        sim.style.top = (e.clientY - rect.top) / scale_y - sim.spice_hot_y + 'px';
         e.preventDefault();
     }
 

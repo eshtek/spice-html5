@@ -131,15 +131,20 @@ adler.prototype.update = function(b)
     this.s2 %= 65521;
 }
 
+/* The image as one IDAT chunk: a zlib stream of stored (uncompressed)
+   deflate blocks.  A stored block holds at most 65535 bytes, so the
+   scanlines are cut into as many as it takes; a cursor larger than about
+   128 pixels square used to be refused here. */
+var STORED_BLOCK_MAX = 65535;
+
 function PngIDAT(width, height, bytes)
 {
-    if (bytes.byteLength > 65535)
-    {
-        throw new Error("Cannot handle more than 64K");
-    }
     this.data = bytes;
     this.width = width;
     this.height = height;
+    /* Every scanline is filter type 0 followed by its pixels. */
+    this.raw_size = this.height * (1 + this.width * 4);
+    this.blocks = Math.max(1, Math.ceil(this.raw_size / STORED_BLOCK_MAX));
 }
 
 PngIDAT.prototype =
@@ -157,47 +162,54 @@ PngIDAT.prototype =
         dv.setUint8(at, 'A'.charCodeAt(0)); at++;
         dv.setUint8(at, 'T'.charCodeAt(0)); at++;
 
-        /* zlib header.  */
+        /* zlib header: deflate, 32K window, no preset dictionary. */
         dv.setUint8(at, 0x78); at++;
         dv.setUint8(at, 0x01); at++;
 
-        /* Deflate header.  Specifies uncompressed, final bit */
-        dv.setUint8(at, 0x80); at++;
-        dv.setUint16(at, this.data.byteLength + this.height); at += 2;
-        dv.setUint16(at, ~(this.data.byteLength + this.height)); at += 2;
         var u8 = new Uint8Array(this.data);
+        var out = new Uint8Array(a);
+        var left = this.raw_size;
+        var block_left = 0;
+        var put = function(b)
+        {
+            if (block_left == 0)
+            {
+                /* Stored block: BFINAL in bit 0, BTYPE 00, then LEN and
+                   its one's complement, little-endian. */
+                block_left = Math.min(left, STORED_BLOCK_MAX);
+                out[at++] = left <= STORED_BLOCK_MAX ? 1 : 0;
+                out[at++] = block_left & 0xff;
+                out[at++] = block_left >> 8;
+                out[at++] = ~block_left & 0xff;
+                out[at++] = (~block_left >> 8) & 0xff;
+            }
+            out[at++] = b;
+            zsum.update(b);
+            block_left--;
+            left--;
+        };
         for (i = 0, y = 0; y < this.height; y++)
         {
-            /* Filter type 0 - uncompressed */
-            dv.setUint8(at, 0); at++;
-            zsum.update(0);
-            for (x = 0; x < this.width && i < this.data.byteLength; x++)
+            put(0);
+            for (x = 0; x < this.width; x++)
             {
-                zsum.update(u8[i]);
-                dv.setUint8(at, u8[i++]); at++;
-                zsum.update(u8[i]);
-                dv.setUint8(at, u8[i++]); at++;
-                zsum.update(u8[i]);
-                dv.setUint8(at, u8[i++]); at++;
-                zsum.update(u8[i]);
-                dv.setUint8(at, u8[i++]); at++;
+                put(u8[i] || 0); i++;
+                put(u8[i] || 0); i++;
+                put(u8[i] || 0); i++;
+                put(u8[i] || 0); i++;
             }
         }
 
-        /* zlib checksum.   */
-        dv.setUint16(at, zsum.s2); at+=2;
-        dv.setUint16(at, zsum.s1); at+=2;
-
-        /* FIXME - something is not quite right with the zlib code;
-                   you get an error from libpng if you open the image in
-                   gimp.  But it works, so it's good enough for now... */
+        /* zlib checksum, big-endian. */
+        dv.setUint16(at, zsum.s2); at += 2;
+        dv.setUint16(at, zsum.s1); at += 2;
 
         dv.setUint32(at, crc32(a, orig + 4, this.buffer_size() - 8)); at += 4;
         return at;
     },
     buffer_size: function()
     {
-        return 12 + this.data.byteLength + this.height + 4 + 2 + 1 + 2 + 2;
+        return 12 + 2 + this.blocks * 5 + this.raw_size + 4;
     }
 }
 

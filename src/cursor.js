@@ -38,6 +38,9 @@ function SpiceCursorConn()
     SpiceConn.apply(this, arguments);
 }
 
+/* The largest cursor image Chromium and Firefox will show. */
+var MAX_CSS_CURSOR = 128;
+
 SpiceCursorConn.prototype = Object.create(SpiceConn.prototype);
 SpiceCursorConn.prototype.process_channel_message = function(msg)
 {
@@ -259,8 +262,14 @@ SpiceCursorConn.prototype.set_cursor = function(cursor)
     var screen = document.getElementById(this.parent.screen_id);
     screen.style.cursor = 'auto';
     screen.style.cursor = curstr;
-    if (window.getComputedStyle(screen, null).cursor == 'auto')
-        SpiceSimulateCursor.simulate_cursor(this, cursor, screen, pngstr);
+    /* Chromium and Firefox drop a cursor image over 128 px on a side
+       without saying so: the computed style still reads as the url,
+       and the pointer is the plain arrow, with the arrow's hot spot,
+       so it points somewhere other than the guest's cursor does.  A
+       shape that size is drawn under the pointer instead. */
+    var too_large = cursor.header.width > MAX_CSS_CURSOR || cursor.header.height > MAX_CSS_CURSOR;
+    if (too_large || window.getComputedStyle(screen, null).cursor == 'auto')
+        SpiceSimulateCursor.simulate_cursor(this, cursor, screen, pngstr, too_large);
     else
     {
         /* This cursor took effect natively, so drop the simulated one
