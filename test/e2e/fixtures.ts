@@ -166,6 +166,16 @@ export const COUNTER_SCRIPT = `
 })();
 `;
 
+/* Options handed to SpiceMainConn by the harness page, plus the socket. */
+export interface ConnectOptions {
+  password?: string;
+  uri?: string;
+  preferred_compression?: string | number;
+  disable_effects?: string[];
+  color_depth?: number;
+  coalesce_motion?: boolean;
+}
+
 export interface Counters {
   objectUrlsCreated: number;
   objectUrlsRevoked: number;
@@ -211,13 +221,14 @@ export class SpiceClient {
   }
 
   /* Resolves with the onsuccess payload, rejects with the onerror message. */
-  connect(opts: { password?: string; uri?: string; preferred_compression?: string | number } = {}) {
+  connect(opts: ConnectOptions = {}) {
     return this.page.evaluate((o) => (window as unknown as { harness: { connect: (o: unknown) => Promise<string> } }).harness.connect(o), opts);
   }
 
   /* Connects and waits until every default child channel is ready. */
-  async connectReady(opts: { password?: string; channels?: string[]; preferred_compression?: string | number } = {}) {
-    await this.connect({ password: opts.password, preferred_compression: opts.preferred_compression });
+  async connectReady(opts: ConnectOptions & { channels?: string[] } = {}) {
+    const { channels: _channels, ...connect } = opts;
+    await this.connect(connect);
     const channels = opts.channels ?? ["display", "inputs", "cursor"];
     await this.page.waitForFunction(
       (names) => {
@@ -236,6 +247,10 @@ export class SpiceClient {
 
   errors() {
     return this.page.evaluate(() => (window as unknown as { harness: { errors: string[] } }).harness.errors);
+  }
+
+  volumes() {
+    return this.page.evaluate(() => (window as unknown as { harness: { volumes: Array<{ playback: boolean; mute: boolean; level: number; volumes: number[] }> } }).harness.volumes);
   }
 
   channelStates() {

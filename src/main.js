@@ -66,6 +66,16 @@ import { resize_helper, handle_resize } from './resize.js';
 **                                  bandwidth for far less decoding work; suited
 **                                  to a LAN, not a WAN.  Unset keeps the server's
 **                                  own setting.
+**          onvolume    (optional)  If given, called with the guest's mixer
+**                                  { playback, mute, level, volumes } when
+**                                  the agent reports it; playback levels are
+**                                  applied to the audio the console plays.
+**          disable_effects (optional)  Guest desktop effects to turn off
+**                                  through the agent, any of "wallpaper",
+**                                  "font-smooth", "animation"; fewer
+**                                  pixels change, so less to send.
+**          color_depth (optional)  Colour depth to ask the guest desktop
+**                                  for through the agent, e.g. 16.
 **
 **  Throws error if there are troubles.  Requires a modern (by 2012 standards)
 **      browser, including WebSocket and WebSocket.binaryType == arraybuffer
@@ -270,6 +280,7 @@ SpiceMainConn.prototype.process_channel_message = function(msg)
             this.agent_caps = [agent_caps.caps];
             if (agent_caps.request)
                 this.announce_agent_capabilities(0);
+            this.send_display_config();
             return true;
         }
         else if (agent_data.type == Constants.VD_AGENT_FILE_XFER_STATUS)
@@ -295,6 +306,11 @@ SpiceMainConn.prototype.process_channel_message = function(msg)
         else if (agent_data.type == Constants.VD_AGENT_CLIPBOARD_RELEASE)
         {
             // Currently we don't need to do anything when the agent releases the clipboard
+            return true;
+        }
+        else if (agent_data.type == Constants.VD_AGENT_AUDIO_VOLUME_SYNC)
+        {
+            this.handle_volume_sync(new Messages.VDAgentAudioVolumeSync(agent_data.data));
             return true;
         }
 
@@ -440,8 +456,60 @@ SpiceMainConn.prototype.announce_agent_capabilities = function(request)
                                                         (1 << Constants.VD_AGENT_CAP_MONITORS_CONFIG) |
                                                         (1 << Constants.VD_AGENT_CAP_REPLY) |
                                                         (1 << Constants.VD_AGENT_CAP_CLIPBOARD_SELECTION) |
-                                                        (1 << Constants.VD_AGENT_CAP_CLIPBOARD_BY_DEMAND));
+                                                        (1 << Constants.VD_AGENT_CAP_CLIPBOARD_BY_DEMAND) |
+                                                        (1 << Constants.VD_AGENT_CAP_AUDIO_VOLUME_SYNC));
     this.send_agent_message(Constants.VD_AGENT_ANNOUNCE_CAPABILITIES, caps);
+}
+
+/* Desktop effects and colour depth the application asked for, sent once
+   the agent has said it takes display config; nothing is sent when
+   nothing was asked, so the guest keeps its own settings. */
+var DISPLAY_EFFECT_FLAGS = {
+    "wallpaper": Constants.VD_AGENT_DISPLAY_CONFIG_FLAG_DISABLE_WALLPAPER,
+    "font-smooth": Constants.VD_AGENT_DISPLAY_CONFIG_FLAG_DISABLE_FONT_SMOOTH,
+    "animation": Constants.VD_AGENT_DISPLAY_CONFIG_FLAG_DISABLE_ANIMATION,
+};
+
+SpiceMainConn.prototype.send_display_config = function()
+{
+    if (! (this.agent_caps[0] & (1 << Constants.VD_AGENT_CAP_DISPLAY_CONFIG)))
+        return;
+    var flags = 0;
+    var effects = this.disable_effects || [];
+    for (var i = 0; i < effects.length; i++)
+    {
+        var flag = DISPLAY_EFFECT_FLAGS[effects[i]];
+        if (flag === undefined)
+            this.log_warn("Ignoring unknown disable_effects entry: " + effects[i]);
+        else
+            flags |= flag;
+    }
+    if (this.color_depth)
+        flags |= Constants.VD_AGENT_DISPLAY_CONFIG_FLAG_SET_COLOR_DEPTH;
+    if (! flags)
+        return;
+    this.send_agent_message(Constants.VD_AGENT_DISPLAY_CONFIG,
+                            new Messages.VDAgentDisplayConfig(flags, this.color_depth || 0));
+}
+
+/* The guest's mixer level as a 0..1 gain (the mean of its channels, 0
+   when muted), kept on the main connection so a playback channel that
+   starts later picks it up, and applied to a live one at once. */
+SpiceMainConn.prototype.handle_volume_sync = function(sync)
+{
+    var sum = 0;
+    for (var i = 0; i < sync.volume.length; i++)
+        sum += sync.volume[i];
+    var level = sync.volume.length ? sum / sync.volume.length / 65535 : 1;
+    var report = { playback: !!sync.is_playback, mute: !!sync.mute, level: level, volumes: sync.volume };
+    if (sync.is_playback)
+    {
+        this.playback_volume = { mute: !!sync.mute, level: level };
+        if (this.playback && this.playback.apply_volume)
+            this.playback.apply_volume();
+    }
+    if (this.onvolume !== undefined)
+        this.onvolume(report, this);
 }
 
 SpiceMainConn.prototype.resize_window = function(flags, width, height, depth, x, y)

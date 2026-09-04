@@ -30,6 +30,7 @@ const h = {
   errors: [],
   successes: [],
   agentCalls: 0,
+  volumes: [],
   connect(opts) {
     const uri = opts.uri || ('ws://' + location.host + '/spice');
     return new Promise((resolve, reject) => {
@@ -51,6 +52,9 @@ const h = {
             if (!settled) { settled = true; resolve(m); }
           },
           onagent() { h.agentCalls++; },
+          onvolume(v) { h.volumes.push(v); },
+          disable_effects: opts.disable_effects,
+          color_depth: opts.color_depth,
         });
         window.spice_connection = h.sc;
       } catch (e) {

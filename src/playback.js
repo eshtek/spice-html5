@@ -236,6 +236,9 @@ SpicePlaybackConn.prototype.setup_audio_context = function()
     }
 
     this.wc_ctx = new AudioContext({ latencyHint: 'interactive' });
+    this.wc_gain = this.wc_ctx.createGain();
+    this.wc_gain.connect(this.wc_ctx.destination);
+    this.apply_volume();
 
     var conn = this;
     this.wc_ctx.onstatechange = function ()
@@ -395,7 +398,7 @@ SpicePlaybackConn.prototype.schedule_buffer = function(buf)
 
     var src = ctx.createBufferSource();
     src.buffer = buf;
-    src.connect(ctx.destination);
+    src.connect(this.wc_gain);
     src.start(this.wc_next_time);
     this.wc_next_time += buf.duration;
     this.appends++;
@@ -462,6 +465,7 @@ SpicePlaybackConn.prototype.process_channel_message = function(msg)
 
             this.audio = document.createElement("audio");
             this.audio.spiceconn = this;
+            this.apply_volume();
             this.audio.setAttribute('autoplay', true);
             this.audio.src = window.URL.createObjectURL(this.media_source);
             document.getElementById(this.parent.screen_id).appendChild(this.audio);
@@ -868,6 +872,21 @@ SpicePlaybackConn.prototype.destroy_audio = function()
    the MediaSource; without this they were only freed by a server STOP,
    and an application that stops and recreates connections leaked one
    set per cycle. */
+/* The guest's mixer, as the agent last reported it to the main channel,
+   on whichever output this channel is using. */
+SpicePlaybackConn.prototype.apply_volume = function()
+{
+    var v = this.parent ? this.parent.playback_volume : undefined;
+    var gain = v === undefined ? 1 : (v.mute ? 0 : v.level);
+    if (this.wc_gain)
+        this.wc_gain.gain.value = gain;
+    if (this.audio)
+    {
+        this.audio.muted = gain === 0;
+        this.audio.volume = gain;
+    }
+}
+
 SpicePlaybackConn.prototype.cleanup = function()
 {
     this.destroy_audio();

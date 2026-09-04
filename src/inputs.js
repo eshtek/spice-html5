@@ -50,7 +50,7 @@ function SpiceInputsConn()
 
     this.mousex = undefined;
     this.mousey = undefined;
-    this.button_state = 0;
+    this.buttons_state = 0;
     this.waiting_for_ack = 0;
 
     /* Modifier tracking is module state; a page that tears down one
@@ -99,17 +99,24 @@ function handle_mousemove(e)
         if (this.sc.inputs.waiting_for_ack < (2 * Constants.SPICE_INPUT_MOTION_ACK_BUNCH))
         {
             var msg = new Messages.SpiceMiniData();
+            var inputs = this.sc.inputs;
             var move;
             if (this.sc.mouse_mode == Constants.SPICE_MOUSE_MODE_CLIENT)
             {
-                move = new Messages.SpiceMsgcMousePosition(this.sc, e)
+                move = new Messages.SpiceMsgcMousePosition(e.offsetX, e.offsetY, inputs.buttons_state);
                 msg.build_msg(Constants.SPICE_MSGC_INPUTS_MOUSE_POSITION, move);
             }
             else
             {
-                move = new Messages.SpiceMsgcMouseMotion(this.sc, e)
+                /* Relative to where the pointer last was, which the
+                   cursor channel moves when the server warps it. */
+                var dx = inputs.mousex !== undefined ? e.offsetX - inputs.mousex : 0;
+                var dy = inputs.mousey !== undefined ? e.offsetY - inputs.mousey : 0;
+                move = new Messages.SpiceMsgcMouseMotion(dx, dy, inputs.buttons_state);
                 msg.build_msg(Constants.SPICE_MSGC_INPUTS_MOUSE_MOTION, move);
             }
+            inputs.mousex = e.offsetX;
+            inputs.mousey = e.offsetY;
             this.sc.inputs.send_msg(msg);
             this.sc.inputs.waiting_for_ack++;
         }
@@ -131,7 +138,9 @@ function handle_mousemove(e)
 
 function handle_mousedown(e)
 {
-    var press = new Messages.SpiceMsgcMousePress(this.sc, e)
+    var press = new Messages.SpiceMsgcMousePress(e.button + 1, 1 << e.button);
+    if (this.sc && this.sc.inputs)
+        this.sc.inputs.buttons_state = press.buttons_state;
     var msg = new Messages.SpiceMiniData();
     msg.build_msg(Constants.SPICE_MSGC_INPUTS_MOUSE_PRESS, press);
     if (this.sc && this.sc.inputs && this.sc.inputs.state === "ready")
@@ -148,7 +157,9 @@ function handle_contextmenu(e)
 
 function handle_mouseup(e)
 {
-    var release = new Messages.SpiceMsgcMouseRelease(this.sc, e)
+    var release = new Messages.SpiceMsgcMouseRelease(e.button + 1, 0);
+    if (this.sc && this.sc.inputs)
+        this.sc.inputs.buttons_state = 0;
     var msg = new Messages.SpiceMiniData();
     msg.build_msg(Constants.SPICE_MSGC_INPUTS_MOUSE_RELEASE, release);
     if (this.sc && this.sc.inputs && this.sc.inputs.state === "ready")
