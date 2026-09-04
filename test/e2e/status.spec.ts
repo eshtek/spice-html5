@@ -15,6 +15,34 @@ test.describe("onstate", () => {
     expect(events.find((e) => e.name === "display")).toMatchObject({ channel: 2, id: 0 });
   });
 
+  test("the first state reaches onstate only after the constructor has returned", async ({ client }) => {
+    const seen = await client.page.evaluate(
+      () =>
+        new Promise<string[]>((resolve) => {
+          const seen: string[] = [];
+          const w = window as unknown as { harness: { Spice: { SpiceMainConn: new (o: object) => { stop: () => void } } } };
+          let sc: { stop: () => void } | undefined;
+          sc = new w.harness.Spice.SpiceMainConn({
+            uri: `ws://${location.host}/spice`,
+            password: "",
+            screen_id: "spice-screen",
+            message_id: "message-div",
+            onstate(s: { name: string; state: string }) {
+              if (s.name === "main" && s.state === "connecting") seen.push(sc ? "after" : "during");
+            },
+            onsuccess() {
+              sc?.stop();
+              resolve(seen);
+            },
+            onerror() {
+              resolve(seen);
+            },
+          });
+        }),
+    );
+    expect(seen).toEqual(["after"]);
+  });
+
   test("stopping the session ends every channel closing then closed", async ({ client }) => {
     await client.connectReady();
     await client.disconnect();

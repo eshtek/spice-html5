@@ -161,6 +161,37 @@ test("server mouse mode measures motion from where the server last put the point
   expect(Math.abs((m.fields.y as number) - 35)).toBeLessThanOrEqual(1);
 });
 
+test("server mouse mode under guest pointer acceleration keeps sending the mouse's own deltas", async ({ client, spice }) => {
+  /* Open design question: motion is measured from where the guest last
+     put its pointer, so a guest that accelerates (Windows' default)
+     overshoots the browser pointer and the next delta swings back.
+     spice-gtk sends the mouse's own deltas and lets the guest run ahead. */
+  test.fail(true, "motion is anchored on the guest cursor, which oscillates under acceleration");
+  await client.disconnect();
+  await spice.reset({ mouseModes: { supported: 1, current: 1 } });
+  await client.connectReady();
+  await spice.send("display", "surfaceCreate", { width: 320, height: 240 });
+  const bb = (await client.surface().boundingBox())!;
+  await client.page.mouse.move(bb.x + 100, bb.y + 100);
+  await spice.waitFor("inputs", "mouse_motion");
+  const guest = { x: 100, y: 100 };
+  await spice.send("cursor", "cursorMove", guest);
+  await client.page.waitForTimeout(100);
+  const deltas: number[] = [];
+  for (let i = 1; i <= 4; i++) {
+    const before = await spice.mark();
+    await client.page.mouse.move(bb.x + 100 + 10 * i, bb.y + 100);
+    await expect.poll(async () => (await spice.inbound("inputs", "mouse_motion", before)).length).toBe(1);
+    const [m] = await spice.inbound("inputs", "mouse_motion", before);
+    deltas.push(m.fields.x as number);
+    /* The guest moves its pointer twice as far as told. */
+    guest.x += 2 * (m.fields.x as number);
+    await spice.send("cursor", "cursorMove", guest);
+    await client.page.waitForTimeout(60);
+  }
+  for (const dx of deltas) expect(Math.abs(dx - 10)).toBeLessThanOrEqual(1);
+});
+
 test("a held button is carried in the motion that follows", async ({ client, spice }) => {
   const bb = (await client.surface().boundingBox())!;
   await client.page.mouse.move(bb.x + 50, bb.y + 50);

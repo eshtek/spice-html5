@@ -147,6 +147,24 @@ describe("spice lz4 image", () => {
     });
   }
 
+  test("rows padded to a 4-byte stride decode, as spice-server encodes them", () => {
+    /* spice-server compresses src->stride bytes a row, and a 33-pixel
+       16-bit row is 66 bytes packed but 68 in a 4-byte-aligned bitmap. */
+    const w = 33;
+    const h = 4;
+    const source = quadrantsRGBA(w, h, 0);
+    const packed = rgbaToRGB555(source);
+    const padded = new Uint8Array(68 * h);
+    for (let y = 0; y < h; y++) padded.set(packed.subarray(y * 66, (y + 1) * 66), y * 68);
+    const payload = spiceLz4Payload(true, C.SPICE_BITMAP_FMT_16BIT, lz4EncodeBlocks(padded, [padded.length]));
+    const img = convert_spice_lz4_to_web(context, { width: w, height: h }, { data: payload.buffer });
+    expect(img).toBeDefined();
+    for (let i = 0; i < source.length; i += 4) {
+      expect(Math.abs(img.data[i] - source[i])).toBeLessThanOrEqual(8);
+      expect(Math.abs(img.data[i + 2] - source[i + 2])).toBeLessThanOrEqual(8);
+    }
+  });
+
   test("drawCopyLz4 parses as an LZ4 image the decoder accepts", () => {
     const pixels = rgbaToBGRx(rgba);
     const { type, data } = parseMini(M.drawCopyLz4({ box: rect(5, 6, 5 + width, 6 + height), pixels, blockRows: 4, cache: true, cacheId: 7 }));

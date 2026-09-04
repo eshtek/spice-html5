@@ -219,6 +219,38 @@ test.describe("composite", () => {
     await client.expectPixel(23, 18, [0, 0, 255]);
   });
 
+  test("a nearest filter scales without smoothing", async ({ client, spice }) => {
+    /* pixman's NEAREST is 3; FAST (0) is nearest too, and 1, 2 and 4 smooth. */
+    const p = new Uint8Array(8 * 8 * 4);
+    for (let i = 0; i < 64; i++) p.set(i % 8 < 4 ? [0, 0, 255, 0] : [255, 0, 0, 0], i * 4);
+    await spice.send("display", "drawComposite", { box: box(10, 10, 16, 16), op: 1, srcFilter: 3, srcTransform: [0.5, 0, 0, 0, 0.5, 0], src: { box: box(0, 0, 8, 8), imageWidth: 8, imageHeight: 8, pixels: Array.from(p) } });
+    await client.expectPixel(17, 18, [255, 0, 0]);
+    await client.expectPixel(18, 18, [0, 0, 255]);
+  });
+
+  test("blackness and whiteness on an A8 surface set its alpha", async ({ client, spice }) => {
+    await spice.send("display", "surfaceCreate", { id: 1, width: 16, height: 16, format: 8, primary: false });
+    await spice.send("display", "drawCopyBitmap", { surface: 1, box: box(0, 0, 16, 16), format: "8bit-a", pixels: Array.from({ length: 256 }, () => 255) });
+    await spice.send("display", "drawMaskOnly", { type: "blackness", surface: 1, box: box(0, 0, 8, 16) });
+    await spice.send("display", "drawMaskOnly", { type: "whiteness", surface: 1, box: box(8, 0, 4, 16), mask: { rows: Array.from({ length: 16 }, () => "##..") } });
+    const alpha = (x: number, y: number) =>
+      client.page.evaluate(([x, y]) => (document.getElementById("spice_surface_1") as HTMLCanvasElement).getContext("2d")!.getImageData(x, y, 1, 1).data[3], [x, y]);
+    await expect.poll(() => alpha(4, 4)).toBe(0);
+    await expect.poll(() => alpha(9, 4)).toBe(255);
+    await expect.poll(() => alpha(14, 4)).toBe(255);
+  });
+
+  test("a masked copy of an RGBA source onto an ARGB surface copies its alpha", async ({ client, spice }) => {
+    await spice.send("display", "surfaceCreate", { id: 1, width: 16, height: 16, format: 96, primary: false });
+    await spice.send("display", "drawFill", { surface: 1, box: box(0, 0, 16, 16), color: 0xff0000 });
+    const clear = Array.from({ length: 256 }, () => [0, 0, 255, 0]).flat();
+    await spice.send("display", "drawCopyBitmap", { surface: 1, box: box(0, 0, 16, 16), format: "rgba", pixels: clear, mask: { rows: Array.from({ length: 16 }, () => "########........") } });
+    const alpha = (x: number, y: number) =>
+      client.page.evaluate(([x, y]) => (document.getElementById("spice_surface_1") as HTMLCanvasElement).getContext("2d")!.getImageData(x, y, 1, 1).data[3], [x, y]);
+    await expect.poll(() => alpha(4, 4)).toBe(0);
+    await expect.poll(() => alpha(12, 4)).toBe(255);
+  });
+
   test("an A8 surface can be created and used as a mask", async ({ client, spice }) => {
     await spice.send("display", "surfaceCreate", { id: 1, width: 16, height: 16, format: 8, primary: false });
     await spice.send("display", "drawCopyBitmap", { surface: 1, box: box(0, 0, 16, 16), format: "8bit-a", pixels: Array.from({ length: 256 }, (_, i) => (i % 16 < 8 ? 255 : 0)) });
