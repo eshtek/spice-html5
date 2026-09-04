@@ -157,6 +157,21 @@ export const COUNTER_SCRIPT = `
 })();
 `;
 
+export interface StateEvent {
+  channel: number;
+  name: string;
+  id: number;
+  state: string;
+  detail?: { code?: number; reason?: string; clean?: boolean };
+}
+
+export interface Modifiers {
+  scroll_lock: boolean;
+  num_lock: boolean;
+  caps_lock: boolean;
+  raw: number;
+}
+
 export interface Counters {
   objectUrlsCreated: number;
   objectUrlsRevoked: number;
@@ -198,13 +213,13 @@ export class SpiceClient {
   }
 
   /* Resolves with the onsuccess payload, rejects with the onerror message. */
-  connect(opts: { password?: string; uri?: string } = {}) {
+  connect(opts: { password?: string; uri?: string; sync_lock_keys?: boolean } = {}) {
     return this.page.evaluate((o) => (window as unknown as { harness: { connect: (o: unknown) => Promise<string> } }).harness.connect(o), opts);
   }
 
   /* Connects and waits until every default child channel is ready. */
-  async connectReady(opts: { password?: string; channels?: string[] } = {}) {
-    await this.connect({ password: opts.password });
+  async connectReady(opts: { password?: string; channels?: string[]; sync_lock_keys?: boolean } = {}) {
+    await this.connect({ password: opts.password, sync_lock_keys: opts.sync_lock_keys });
     const channels = opts.channels ?? ["display", "inputs", "cursor"];
     await this.page.waitForFunction(
       (names) => {
@@ -223,6 +238,28 @@ export class SpiceClient {
 
   errors() {
     return this.page.evaluate(() => (window as unknown as { harness: { errors: string[] } }).harness.errors);
+  }
+
+  states() {
+    return this.page.evaluate(() => (window as unknown as { harness: { states: StateEvent[] } }).harness.states);
+  }
+
+  modifiers() {
+    return this.page.evaluate(() => (window as unknown as { harness: { modifiers: Modifiers[] } }).harness.modifiers);
+  }
+
+  /* A key press the client sees as coming from a keyboard with the given
+     lock keys lit; page.keyboard cannot set those. */
+  pressWithLocks(code: string, keyCode: number, locks: { NumLock?: boolean; CapsLock?: boolean; ScrollLock?: boolean }) {
+    return this.page.evaluate(
+      ([code, keyCode, locks]) => {
+        const c = document.querySelector("#spice-screen canvas") as HTMLCanvasElement;
+        const init = { code, keyCode, bubbles: true, cancelable: true, modifierNumLock: locks.NumLock, modifierCapsLock: locks.CapsLock, modifierScrollLock: locks.ScrollLock } as KeyboardEventInit;
+        c.dispatchEvent(new KeyboardEvent("keydown", init));
+        c.dispatchEvent(new KeyboardEvent("keyup", init));
+      },
+      [code, keyCode, locks] as const,
+    );
   }
 
   channelStates() {

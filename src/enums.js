@@ -239,6 +239,19 @@ export var Constants = {
   SPICE_CHANNEL_USBREDIR              : 9,
   SPICE_CHANNEL_PORT                  : 10,
   SPICE_CHANNEL_WEBDAV                : 11,
+  SPICE_CHANNEL_NAMES : {
+    1: "main",
+    2: "display",
+    3: "inputs",
+    4: "cursor",
+    5: "playback",
+    6: "record",
+    7: "tunnel",
+    8: "smartcard",
+    9: "usbredir",
+    10: "port",
+    11: "webdav",
+  },
 
   SPICE_SURFACE_FLAGS_PRIMARY : (1 << 0),
 
@@ -255,6 +268,10 @@ export var Constants = {
 
   SPICE_IMAGE_SCALE_MODE_INTERPOLATE : 0,
   SPICE_IMAGE_SCALE_MODE_NEAREST     : 1,
+
+  SPICE_KEYBOARD_MODIFIER_FLAGS_SCROLL_LOCK : (1 << 0),
+  SPICE_KEYBOARD_MODIFIER_FLAGS_NUM_LOCK    : (1 << 1),
+  SPICE_KEYBOARD_MODIFIER_FLAGS_CAPS_LOCK   : (1 << 2),
 
   SPICE_IMAGE_TYPE_BITMAP         : 0,
   SPICE_IMAGE_TYPE_QUIC           : 1,
