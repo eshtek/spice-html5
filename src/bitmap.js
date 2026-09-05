@@ -26,36 +26,36 @@
 
 import { Constants } from './enums.js';
 
+/* A 32-bit source pixel is B, G, R, A in memory. Read it as a little-endian
+   word, A R G B, rotate it left by eight to R G B A and store that word
+   big-endian, so the bytes land in the R, G, B, A order ImageData wants: one
+   load, one store and two shifts per pixel. A DataView takes either host
+   byte order and any alignment. Only 32BIT and RGBA are handled; 32BIT
+   ignores the source's high byte and is fully opaque. */
 function convert_spice_bitmap_to_web(context, spice_bitmap)
 {
-    var ret;
-    var offset, x, src_offset = 0, src_dec = 0;
-    var u8 = new Uint8Array(spice_bitmap.data);
     if (spice_bitmap.format != Constants.SPICE_BITMAP_FMT_32BIT &&
         spice_bitmap.format != Constants.SPICE_BITMAP_FMT_RGBA)
         return undefined;
 
-    if (!(spice_bitmap.flags & Constants.SPICE_BITMAP_FLAGS_TOP_DOWN))
+    const w = spice_bitmap.x;
+    const h = spice_bitmap.y;
+    const stride = spice_bitmap.stride;
+    const ret = context.createImageData(w, h);
+    const opaque = spice_bitmap.format == Constants.SPICE_BITMAP_FMT_32BIT;
+    const top_down = spice_bitmap.flags & Constants.SPICE_BITMAP_FLAGS_TOP_DOWN;
+    const src = new DataView(spice_bitmap.data);
+    const dest = new DataView(ret.data.buffer);
+    let d = 0;
+    for (let y = 0; y < h; y++)
     {
-        src_offset = (spice_bitmap.y - 1 ) * spice_bitmap.stride;
-        src_dec = 2 * spice_bitmap.stride;
-    }
-
-    ret = context.createImageData(spice_bitmap.x, spice_bitmap.y);
-    var dest = ret.data;
-    var end = spice_bitmap.y * spice_bitmap.stride;
-    var w = spice_bitmap.x;
-    var opaque = spice_bitmap.format == Constants.SPICE_BITMAP_FMT_32BIT;
-    for (offset = 0; offset < end; src_offset -= src_dec)
-        for (x = 0; x < w; x++, offset += 4, src_offset += 4)
+        let s = (top_down ? y : h - 1 - y) * stride;
+        for (let x = 0; x < w; x++, d += 4, s += 4)
         {
-            dest[offset + 0] = u8[src_offset + 2];
-            dest[offset + 1] = u8[src_offset + 1];
-            dest[offset + 2] = u8[src_offset + 0];
-            // FIXME - We effectively treat all images as having SPICE_IMAGE_FLAGS_HIGH_BITS_SET
-            dest[offset + 3] = opaque ? 255 : u8[src_offset];
+            const v = src.getUint32(s, true);
+            dest.setUint32(d, (v << 8) | (opaque ? 0xff : v >>> 24), false);
         }
-
+    }
     return ret;
 }
 
