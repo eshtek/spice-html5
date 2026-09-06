@@ -151,6 +151,10 @@ SpicePlaybackConn.prototype.process_channel_message = function(msg)
         this.milestone("start", "freq " + start.frequency + " channels " +
                                 start.channels + " format " + start.format);
 
+        /* Audio again before the idle timer fired: keep the element we
+           already have, which is already past the autoplay policy. */
+        this.cancel_idle_teardown();
+
         /* Keyed on the audio element, not source_buffer: source_buffer is
            only set asynchronously in handle_source_open, so a second START
            arriving before sourceopen would stack a second audio element. */
@@ -195,9 +199,12 @@ SpicePlaybackConn.prototype.process_channel_message = function(msg)
                explicitly instead, and if it is refused, start it on the
                first interaction with the page. */
             this.try_play();
-
-            return true;
         }
+
+        /* Reusing an existing element is a handled START too. Falling
+           through here reported the message as unhandled, which is now
+           the common case rather than a rarity. */
+        return true;
     }
 
     if (msg.type == Constants.SPICE_MSG_PLAYBACK_DATA)
@@ -291,11 +298,23 @@ SpicePlaybackConn.prototype.process_channel_message = function(msg)
     if (msg.type == Constants.SPICE_MSG_PLAYBACK_STOP)
     {
         Utils.PLAYBACK_DEBUG > 0 && console.log("PlaybackStop");
-        if (this.audio)
-        {
-            this.destroy_audio();
-            return true;
-        }
+
+        /* A stop is not the end of audio, it is the guest closing its
+           output device -- which applications do constantly, around
+           every individual sound. Tearing the pipeline down here meant
+           the next sound built a brand new audio element, and a new
+           element faces the autoplay policy again from scratch: on
+           Firefox every cycle came back paused, so a guest that toggles
+           its device (Audacity around each playback) was silent while
+           one holding the device open (a video) played fine.
+
+           Keep the element and let it idle. Timestamps come from the
+           server's monotonic clock, so a later stream continues the
+           same WebM stream across the gap, which new_cluster already
+           resynchronises. Only a guest that stays quiet for a while
+           gets the element reclaimed. */
+        this.schedule_idle_teardown();
+        return true;
     }
 
     if (msg.type == Constants.SPICE_MSG_PLAYBACK_VOLUME)
@@ -377,6 +396,33 @@ SpicePlaybackConn.prototype.try_play = function()
     });
 }
 
+/* Long enough that an application cycling its output device around
+   individual sounds never loses the element, short enough that a guest
+   which has genuinely finished with audio does not hold one open. */
+var PLAYBACK_IDLE_TEARDOWN_MS = 30000;
+
+SpicePlaybackConn.prototype.schedule_idle_teardown = function()
+{
+    if (! this.audio || this.idle_timer)
+        return;
+
+    var conn = this;
+    this.idle_timer = window.setTimeout(function ()
+    {
+        conn.idle_timer = undefined;
+        Utils.PLAYBACK_DEBUG > 0 && console.log("Playback: idle, releasing the audio element");
+        conn.destroy_audio();
+    }, PLAYBACK_IDLE_TEARDOWN_MS);
+}
+
+SpicePlaybackConn.prototype.cancel_idle_teardown = function()
+{
+    if (! this.idle_timer)
+        return;
+    window.clearTimeout(this.idle_timer);
+    this.idle_timer = undefined;
+}
+
 /* A browser that paused us after accepting play() gets another
    attempt. If it refuses this one it does so through the promise,
    which arms the gesture retry, so this is bounded: a browser that
@@ -385,6 +431,14 @@ SpicePlaybackConn.prototype.retry_paused_playback = function()
 {
     if (! this.audio || ! this.audio.paused || this.gesture_listener || this.tearing_down)
         return;
+
+    /* Space the attempts. The pause event can arrive several times in
+       the same millisecond, and three retries inside one millisecond
+       spends the whole budget before the browser has settled. */
+    var now = Date.now();
+    if (this.last_replay_attempt && now - this.last_replay_attempt < 500)
+        return;
+    this.last_replay_attempt = now;
 
     this.replay_attempts = (this.replay_attempts || 0) + 1;
     if (this.replay_attempts > 3)
@@ -408,6 +462,7 @@ SpicePlaybackConn.prototype.remove_gesture_listeners = function()
 SpicePlaybackConn.prototype.destroy_audio = function()
 {
     this.remove_gesture_listeners();
+    this.cancel_idle_teardown();
 
     if (! this.audio)
         return;
