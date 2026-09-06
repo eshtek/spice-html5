@@ -36,9 +36,79 @@ function SpicePlaybackConn()
     this.queue = new Array();
     this.append_okay = false;
     this.start_time = 0;
+
+    this.data_msgs = 0;
+    this.data_bytes = 0;
+    this.dropped_msgs = 0;
+    this.appends = 0;
+    this.milestones = {};
 }
 
 SpicePlaybackConn.prototype = Object.create(SpiceConn.prototype);
+
+/* Audio has a long chain -- START, an audio element, sourceopen, a
+   source buffer, appends, then actual playback -- and every link can
+   fail without raising anything. When it does the console shows
+   nothing at all, which is indistinguishable from silence in the
+   guest, so each link reports itself once under PLAYBACK_DEBUG. */
+SpicePlaybackConn.prototype.milestone = function(name, detail)
+{
+    if (this.milestones[name])
+        return;
+    this.milestones[name] = true;
+    Utils.PLAYBACK_DEBUG > 0 && console.log("Playback: " + name + (detail ? " (" + detail + ")" : ""));
+}
+
+/* Everything known about the audio pipeline, for the watchdog and for
+   asking a user what their browser is doing. */
+SpicePlaybackConn.prototype.status = function()
+{
+    var s = "reached[" + Object.keys(this.milestones).join(",") + "]" +
+            " data_msgs " + this.data_msgs +
+            " bytes " + this.data_bytes +
+            " dropped " + this.dropped_msgs +
+            " appends " + this.appends +
+            " queue " + this.queue.length +
+            " append_okay " + this.append_okay;
+    if (this.media_source)
+        s += " media_source " + Utils.dump_media_source(this.media_source);
+    else
+        s += " media_source none";
+    if (this.source_buffer)
+        s += " source_buffer yes";
+    else
+        s += " source_buffer NONE";
+    if (this.audio)
+        s += " audio " + Utils.dump_media_element(this.audio);
+    else
+        s += " audio none";
+    return s;
+}
+
+/* The failure this exists for is the silent one: audio arriving and
+   never being heard. Anything that reports itself is easier than this.
+   Fires at most every 10s, and only while data is flowing but the
+   element is not advancing. */
+SpicePlaybackConn.prototype.check_playing = function()
+{
+    if (this.data_msgs < 25)
+        return;
+
+    var playing = this.audio && ! this.audio.paused && this.audio.currentTime > 0;
+    if (playing)
+    {
+        this.milestone("playing");
+        return;
+    }
+
+    var now = Date.now();
+    if (this.last_stall_report && now - this.last_stall_report < 10000)
+        return;
+    this.last_stall_report = now;
+
+    this.log_err("Audio is arriving but not playing. " + this.status());
+}
+
 SpicePlaybackConn.prototype.process_channel_message = function(msg)
 {
     if (!window.MediaSource)
@@ -71,6 +141,9 @@ SpicePlaybackConn.prototype.process_channel_message = function(msg)
             return false;
         }
 
+        this.milestone("start", "freq " + start.frequency + " channels " +
+                                start.channels + " format " + start.format);
+
         /* Keyed on the audio element, not source_buffer: source_buffer is
            only set asynchronously in handle_source_open, so a second START
            arriving before sourceopen would stack a second audio element. */
@@ -90,6 +163,18 @@ SpicePlaybackConn.prototype.process_channel_message = function(msg)
             this.media_source.addEventListener('sourceclosed', handle_source_closed, false);
 
             this.bytes_written = 0;
+            this.milestone("audio-element");
+
+            /* sourceopen is the link that fails most quietly: without it
+               there is no source buffer, and every data message below is
+               discarded with nothing said. */
+            var conn = this;
+            window.setTimeout(function ()
+            {
+                if (! conn.source_buffer && conn.audio)
+                    conn.log_err("Playback: sourceopen never fired after 5s; " +
+                                 "no audio can be decoded. " + conn.status());
+            }, 5000);
 
             /* The autoplay attribute alone is not enough. The page usually opens in
                its own tab, so the audio element is created before
@@ -110,8 +195,23 @@ SpicePlaybackConn.prototype.process_channel_message = function(msg)
     {
         var data = new Messages.SpiceMsgPlaybackData(msg.data);
 
+        this.data_msgs++;
+        this.data_bytes += data.data.byteLength;
+        this.milestone("data");
+
+        /* Audio the browser will never hear. Silently dropping this is
+           how 400KB of guest audio can arrive with the console showing
+           nothing whatsoever. */
         if (! this.source_buffer)
+        {
+            this.dropped_msgs++;
+            if (this.dropped_msgs == 50)
+                this.log_err("Playback: dropped 50 audio messages, no source buffer yet. " +
+                             this.status());
             return true;
+        }
+
+        this.check_playing();
 
         if (this.audio.readyState >= 3 && this.audio.buffered.length > 1 &&
             this.audio.currentTime == this.audio.buffered.end(0) &&
@@ -230,6 +330,7 @@ SpicePlaybackConn.prototype.try_play = function()
 
     p.then(function ()
     {
+        conn.milestone("play-accepted");
         conn.remove_gesture_listeners();
     })
     .catch(function (e)
@@ -241,8 +342,12 @@ SpicePlaybackConn.prototype.try_play = function()
 
         if (! conn.gesture_listener)
         {
-            Utils.PLAYBACK_DEBUG > 0 && console.log("Autoplay refused (" + (e && e.name) +
-                                                    "); audio will start on the first click or keypress.");
+            /* Reported unconditionally: a refused autoplay is the most
+               common reason a client is connected and mute, and gating
+               it behind a debug flag hid exactly the case a user is
+               trying to explain. */
+            console.log("Playback: autoplay refused (" + (e && e.name) +
+                        "); audio will start on the first click or keypress.");
             conn.gesture_listener = function ()
             {
                 conn.remove_gesture_listeners();
@@ -352,12 +457,31 @@ function handle_source_open(e)
     if (p.source_buffer)
         return;
 
-    p.source_buffer = this.addSourceBuffer(Webm.Constants.SPICE_PLAYBACK_CODEC);
+    p.milestone("sourceopen");
+
+    try
+    {
+        p.source_buffer = this.addSourceBuffer(Webm.Constants.SPICE_PLAYBACK_CODEC);
+    }
+    catch (e)
+    {
+        /* addSourceBuffer throws rather than returning null when the
+           codec is refused, so the null check below never ran and the
+           rejection propagated as an unhandled exception out of an
+           event handler -- invisible unless the console was open on
+           the right filter. */
+        p.log_err('Codec ' + Webm.Constants.SPICE_PLAYBACK_CODEC +
+                  ' refused by addSourceBuffer: ' + e);
+        return;
+    }
+
     if (! p.source_buffer)
     {
         p.log_err('Codec ' + Webm.Constants.SPICE_PLAYBACK_CODEC + ' not available.');
         return;
     }
+
+    p.milestone("source-buffer");
 
     if (Utils.PLAYBACK_DEBUG > 0)
         playback_handle_event_debug.call(this, e);
@@ -438,6 +562,8 @@ function playback_append_buffer(p, b)
     {
         p.source_buffer.appendBuffer(b);
         p.append_okay = false;
+        p.appends++;
+        p.milestone("append");
     }
     catch (e)
     {
