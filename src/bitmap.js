@@ -26,57 +26,34 @@
 
 import { Constants } from './enums.js';
 
-/* A 32-bit source pixel read as one little-endian word is B | G<<8 | R<<16 |
-   A<<24; the ImageData word wants R | G<<8 | B<<16 | A<<24, so the swap is
-   one load, one store and a few shifts per pixel instead of four byte
-   copies. Only 32BIT and RGBA are handled; 32BIT ignores the source's
-   high byte and is fully opaque. */
+/* A 32-bit source pixel is B, G, R, A in memory. Read it as a little-endian
+   word, A R G B, rotate it left by eight to R G B A and store that word
+   big-endian, so the bytes land in the R, G, B, A order ImageData wants: one
+   load, one store and two shifts per pixel. A DataView takes either host
+   byte order and any alignment. Only 32BIT and RGBA are handled; 32BIT
+   ignores the source's high byte and is fully opaque. */
 function convert_spice_bitmap_to_web(context, spice_bitmap, palette)
 {
-    var x, y;
     if (spice_bitmap.format != Constants.SPICE_BITMAP_FMT_32BIT &&
         spice_bitmap.format != Constants.SPICE_BITMAP_FMT_RGBA)
         return convert_other_bitmap_to_web(context, spice_bitmap, palette);
 
-    var w = spice_bitmap.x;
-    var h = spice_bitmap.y;
-    var stride = spice_bitmap.stride;
-    var ret = context.createImageData(w, h);
-    var opaque = spice_bitmap.format == Constants.SPICE_BITMAP_FMT_32BIT;
-    var top_down = spice_bitmap.flags & Constants.SPICE_BITMAP_FLAGS_TOP_DOWN;
-    var keep = opaque ? 0 : 0xff000000;
-    var set = opaque ? 0xff000000 : 0;
-    var src = word_view(spice_bitmap.data, h * stride);
-    if (src && (stride & 3) == 0)
+    const w = spice_bitmap.x;
+    const h = spice_bitmap.y;
+    const stride = spice_bitmap.stride;
+    const ret = context.createImageData(w, h);
+    const opaque = spice_bitmap.format == Constants.SPICE_BITMAP_FMT_32BIT;
+    const top_down = spice_bitmap.flags & Constants.SPICE_BITMAP_FLAGS_TOP_DOWN;
+    const src = new DataView(spice_bitmap.data);
+    const dest = new DataView(ret.data.buffer);
+    let d = 0;
+    for (let y = 0; y < h; y++)
     {
-        var dest = new Uint32Array(ret.data.buffer);
-        var src_stride = stride >> 2;
-        var d = 0;
-        for (y = 0; y < h; y++)
+        let s = (top_down ? y : h - 1 - y) * stride;
+        for (let x = 0; x < w; x++, d += 4, s += 4)
         {
-            var s = (top_down ? y : h - 1 - y) * src_stride;
-            for (x = 0; x < w; x++, d++, s++)
-            {
-                var v = src[s];
-                dest[d] = ((v >>> 16) & 0xff) | (v & 0xff00) | ((v & 0xff) << 16) | (v & keep) | set;
-            }
-        }
-        return ret;
-    }
-
-    /* Unaligned source: byte at a time. */
-    var u8 = new Uint8Array(spice_bitmap.data);
-    var out = ret.data;
-    var offset = 0;
-    for (y = 0; y < h; y++)
-    {
-        var src_offset = (top_down ? y : h - 1 - y) * stride;
-        for (x = 0; x < w; x++, offset += 4, src_offset += 4)
-        {
-            out[offset + 0] = u8[src_offset + 2];
-            out[offset + 1] = u8[src_offset + 1];
-            out[offset + 2] = u8[src_offset + 0];
-            out[offset + 3] = opaque ? 255 : u8[src_offset + 3];
+            const v = src.getUint32(s, true);
+            dest.setUint32(d, (v << 8) | (opaque ? 0xff : v >>> 24), false);
         }
     }
     return ret;
@@ -178,18 +155,6 @@ function convert_spice_mask(spice_bitmap, invers)
         }
     }
     return { bits: bits, width: w, height: h };
-}
-
-/* A Uint32Array over the first `bytes` of an ArrayBuffer or typed-array
-   view, or undefined when the start is not word aligned. */
-function word_view(data, bytes)
-{
-    var buffer = data instanceof ArrayBuffer ? data : data.buffer;
-    var offset = data instanceof ArrayBuffer ? 0 : data.byteOffset;
-    var avail = data.byteLength;
-    if ((offset & 3) != 0 || avail < bytes)
-        return undefined;
-    return new Uint32Array(buffer, offset, bytes >> 2);
 }
 
 export {

@@ -476,6 +476,22 @@ SpiceMsgMainMouseMode.prototype =
     },
 }
 
+function SpiceMsgMainMultiMediaTime(a, at)
+{
+    this.from_buffer(a, at);
+}
+
+SpiceMsgMainMultiMediaTime.prototype =
+{
+    from_buffer: function(a, at)
+    {
+        at = at || 0;
+        var dv = new DataView(a);
+        this.time = dv.getUint32(at, true); at += 4;
+        return at;
+    },
+}
+
 function SpiceMsgMainAgentData(a, at)
 {
     this.from_buffer(a, at);
@@ -1304,23 +1320,6 @@ SpiceMsgcRecordData.prototype =
     }
 }
 
-
-function SpiceMsgMainMultiMediaTime(a, at)
-{
-    this.from_buffer(a, at);
-}
-
-SpiceMsgMainMultiMediaTime.prototype =
-{
-    from_buffer: function(a, at, mb)
-    {
-        at = at || 0;
-        var dv = new DataView(a);
-        this.time = dv.getUint32(at, true); at += 4;
-        return at;
-    },
-}
-
 /* CURSOR_INVAL_ONE: the id of one cached shape to drop. */
 function SpiceMsgCursorInvalOne(a, at)
 {
@@ -1749,6 +1748,7 @@ export {
   SpiceMsgClipboardSend,
   SpiceMsgMainInit,
   SpiceMsgMainMouseMode,
+  SpiceMsgMainMultiMediaTime,
   SpiceMsgMainAgentData,
   SpiceMsgMainAgentTokens,
   SpiceMsgSetAck,
@@ -1785,7 +1785,6 @@ export {
   SpiceMsgCursorInit,
   SpiceMsgCursorMove,
   SpiceMsgCursorInvalOne,
-  SpiceMsgMainMultiMediaTime,
   SpiceMsgPlaybackData,
   SpiceMsgPlaybackMode,
   SpiceMsgPlaybackStart,

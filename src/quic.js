@@ -1293,29 +1293,22 @@ SpiceQuic.prototype =
     },
 }
 
-/* Each decoded pixel is one B,G,R,A word; swap to R,G,B,A in one load and
-   store. QUIC carries its alpha inverted. */
+/* Each decoded pixel is B, G, R, A in memory; read it as a little-endian
+   word, rotate left by eight and store big-endian to get R, G, B, A, as in
+   bitmap.js. QUIC carries its alpha inverted. */
 function convert_spice_quic_to_web(context, spice_quic)
 {
-    var ret = context.createImageData(spice_quic.width, spice_quic.height);
-    var i;
-    var src = spice_quic.outptr;
-    var n = ret.width * ret.height;
-    var rgba = spice_quic.type === Constants.QUIC_IMAGE_TYPE_RGBA;
-    var dest = new Uint32Array(ret.data.buffer);
-    var words = new Uint32Array(src.buffer, src.byteOffset, n);
-    if (rgba)
-        for (i = 0; i < n; i++)
-        {
-            var v = words[i];
-            dest[i] = ((v >>> 16) & 0xff) | (v & 0xff00) | ((v & 0xff) << 16) | (~v & 0xff000000);
-        }
-    else
-        for (i = 0; i < n; i++)
-        {
-            var v = words[i];
-            dest[i] = ((v >>> 16) & 0xff) | (v & 0xff00) | ((v & 0xff) << 16) | 0xff000000;
-        }
+    const ret = context.createImageData(spice_quic.width, spice_quic.height);
+    const src = spice_quic.outptr;
+    const words = new DataView(src.buffer, src.byteOffset, src.byteLength);
+    const dest = new DataView(ret.data.buffer);
+    const n = ret.width * ret.height * 4;
+    const rgba = spice_quic.type === Constants.QUIC_IMAGE_TYPE_RGBA;
+    for (let i = 0; i < n; i += 4)
+    {
+        const v = words.getUint32(i, true);
+        dest.setUint32(i, (v << 8) | (rgba ? ~v >>> 24 : 0xff), false);
+    }
     return ret;
 }
 

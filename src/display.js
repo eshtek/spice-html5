@@ -162,10 +162,10 @@ function with_clip(context, clip, draw)
 function stripAlpha(d)
 {
     var i;
-    var words = new Uint32Array(d.data.buffer);
-    var n = words.length;
-    for (i = 0; i < n; i++)
-        words[i] |= 0xff000000;
+    var data = d.data;
+    var n = d.width * d.height * 4;
+    for (i = 3; i < n; i += 4)
+        data[i] = 255;
 }
 
 /* putImageData ignores the clip region but takes a dirty rectangle, so an

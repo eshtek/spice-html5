@@ -440,6 +440,8 @@ export var Constants = {
 
   SPICE_STREAM_FLAGS_TOP_DOWN : (1 << 0),
 
+  SPICE_STREAM_FLAGS_TOP_DOWN : (1 << 0),
+
   VD_AGENT_PROTOCOL : 1,
   VD_AGENT_MAX_DATA_SIZE : 2048,
 
