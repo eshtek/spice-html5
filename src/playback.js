@@ -470,8 +470,31 @@ function playback_debug_listen_for_one_event(name)
     this.addEventListener(name, playback_handle_event_debug);
 }
 
+/* The element's own error is the only report a browser gives when it
+   rejects the stream we built, and it was routed to the debug logger,
+   which says nothing unless PLAYBACK_DEBUG is raised. A browser that
+   refused the audio therefore looked exactly like a browser playing it
+   silently -- no error, no event, no clue. Always report it. */
+function handle_audio_element_error()
+{
+    var p = this.spiceconn;
+    var err = this.error;
+    if (! err)
+    {
+        p.log_err('Audio element failed with no error set.');
+        return;
+    }
+
+    var names = {1: 'ABORTED', 2: 'NETWORK', 3: 'DECODE', 4: 'SRC_NOT_SUPPORTED'};
+    p.log_err('Audio element error ' + err.code + ' (' +
+              (names[err.code] || 'unknown') + ')' +
+              (err.message ? ': ' + err.message : ''));
+}
+
 function listen_for_audio_events(spiceconn)
 {
+    spiceconn.audio.addEventListener('error', handle_audio_element_error);
+
     var audio_0_events = [
         "abort", "error"
     ];

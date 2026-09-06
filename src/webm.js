@@ -410,7 +410,11 @@ function webm_AudioTrackEntry()
     this.min_cache = 0; // fixme - check
     this.max_block_addition_id = 0;
     this.codec_decode_all = 0; // fixme - check
-    this.seek_pre_roll = 0; // 80000000; // fixme - check
+    /* WebM requires SeekPreRoll to be 80ms for Opus -- the codec needs
+       that much audio decoded ahead of a seek point to come out right.
+       Shipping 0 makes the track technically invalid; Chrome plays it
+       anyway, stricter demuxers need not. */
+    this.seek_pre_roll = 80000000;
     this.codec_delay =   80000000; // Must match codec_private.preskip
     this.codec_id = "A_OPUS";
     this.audio = new webm_Audio(Constants.OPUS_FREQUENCY);
