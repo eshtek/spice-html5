@@ -69,6 +69,7 @@ SpicePlaybackConn.prototype.status = function()
             " dropped " + this.dropped_msgs +
             " appends " + this.appends +
             " queue " + this.queue.length +
+            " gaps_skipped " + (this.gaps_skipped || 0) +
             " append_okay " + this.append_okay;
     if (this.media_source)
         s += " media_source " + Utils.dump_media_source(this.media_source);
@@ -112,6 +113,10 @@ SpicePlaybackConn.prototype.check_playing = function()
        report throttle so the attempts are seconds apart rather than
        three in the same millisecond. */
     this.retry_paused_playback();
+
+    /* An element parked at a hole is unpaused and getting data; only
+       a jump moves it. */
+    this.skip_buffer_gap();
 
     this.log_err("Audio is arriving but not playing. " + this.status());
 }
@@ -229,14 +234,7 @@ SpicePlaybackConn.prototype.process_channel_message = function(msg)
 
         this.check_playing();
 
-        if (this.audio.readyState >= 3 && this.audio.buffered.length > 1 &&
-            this.audio.currentTime == this.audio.buffered.end(0) &&
-            this.audio.currentTime < this.audio.buffered.start(this.audio.buffered.length - 1))
-        {
-            console.log("Audio underrun: we appear to have fallen behind; advancing to " +
-                this.audio.buffered.start(this.audio.buffered.length - 1));
-            this.audio.currentTime = this.audio.buffered.start(this.audio.buffered.length - 1);
-        }
+        this.skip_buffer_gap();
 
         /* Around version 45, Firefox started being very particular about the
            time stamps put into the Opus stream.  The time stamps from the Spice server are
@@ -421,6 +419,55 @@ SpicePlaybackConn.prototype.cancel_idle_teardown = function()
         return;
     window.clearTimeout(this.idle_timer);
     this.idle_timer = undefined;
+}
+
+/* A media element does not cross a hole in its buffer on its own: it
+   plays to the edge and stops, readyState stuck at HAVE_CURRENT_DATA
+   and seeking set, with plenty of audio waiting on the far side.
+   Holes are normal here -- the guest is silent between sounds, and the
+   server's timestamps keep advancing through the silence, so every
+   pause in the guest leaves one -- and they became routine once the
+   element started surviving stop/start cycles.
+
+   The previous version of this could not fire: it required readyState
+   >= 3, which an element parked at the edge of its data never reaches,
+   compared currentTime to a range edge with exact float equality, and
+   only ever considered the first and last ranges. Ask the simpler
+   question instead: is the playhead inside any buffered range, and if
+   not, where is the next one. */
+SpicePlaybackConn.prototype.skip_buffer_gap = function()
+{
+    if (! this.audio)
+        return;
+
+    var buffered = this.audio.buffered;
+    if (! buffered || buffered.length < 1)
+        return;
+
+    /* An element at a range edge reports currentTime exactly at the
+       boundary, so treat the edges as inside. */
+    var t = this.audio.currentTime;
+    var epsilon = 0.01;
+    var next = null;
+
+    for (var i = 0; i < buffered.length; i++)
+    {
+        if (t >= buffered.start(i) - epsilon && t < buffered.end(i) - epsilon)
+            return;                     /* playable where we are */
+        if (buffered.start(i) > t && (next === null || buffered.start(i) < next))
+            next = buffered.start(i);
+    }
+
+    if (next === null)
+        return;                         /* nothing ahead; simply out of audio */
+
+    Utils.PLAYBACK_DEBUG > 0 && console.log("Playback: skipping a " +
+        (next - t).toFixed(3) + "s gap at " + t.toFixed(3));
+
+    /* Land just inside the range: exactly on the boundary can leave
+       the element on the wrong side of it. */
+    this.audio.currentTime = next + epsilon;
+    this.gaps_skipped = (this.gaps_skipped || 0) + 1;
 }
 
 /* A browser that paused us after accepting play() gets another
