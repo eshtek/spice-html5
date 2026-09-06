@@ -538,6 +538,11 @@ SpicePlaybackConn.prototype.retry_paused_playback = function()
 
     Utils.PLAYBACK_DEBUG > 0 && console.log("Playback: element paused with audio buffered; retrying play (" +
                 this.replay_attempts + "/3)");
+
+    /* Put the playhead somewhere decodable before asking the element
+       to move it; a play() from an unplayable position fails without
+       saying why. */
+    this.skip_buffer_gap();
     this.try_play();
 }
 
@@ -720,12 +725,42 @@ function condense_playback_queue(queue)
     return mb;
 }
 
+/* Far beyond any session, and finite, which is the part that
+   matters -- see handle_append_buffer_done. */
+var PLAYBACK_DURATION_CAP = 30 * 24 * 3600;
+
 function handle_append_buffer_done(e)
 {
     var p = this.spiceconn;
 
     if (Utils.PLAYBACK_DEBUG > 1)
         playback_handle_event_debug.call(this, e);
+
+    /* Our init segment carries no Duration element -- a live stream
+       has none to declare -- so processing it sets the MediaSource
+       duration to Infinity. On an infinite stream Firefox treats the
+       live edge as the place to play from, and the live edge of an
+       infinite stream is Infinity itself: every play() seeks the
+       playhead there, where nothing can ever decode. Moving the
+       playhead back was not enough, because the very play() call that
+       should have started it seeked it right back out of the buffer.
+       A finite duration removes the notion that the edge is at
+       infinity. It cannot be set before this point: the init
+       segment's processing would overwrite it. */
+    if (p.media_source && p.media_source.readyState === "open" &&
+        ! Number.isFinite(p.media_source.duration))
+    {
+        try
+        {
+            p.media_source.duration = PLAYBACK_DURATION_CAP;
+            p.milestone("finite-duration");
+        }
+        catch (err)
+        {
+            /* A pending update refuses the write; the next updateend
+               lands here again. */
+        }
+    }
 
     if (p.queue.length > 0)
     {
