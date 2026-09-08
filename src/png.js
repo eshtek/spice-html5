@@ -224,7 +224,6 @@ PngIEND.prototype =
     {
         at = at || 0;
         var orig = at;
-        var i;
         var dv = new DataView(a);
         dv.setUint32(at, this.buffer_size() - 12); at += 4;
         dv.setUint8(at, 'I'.charCodeAt(0)); at++;

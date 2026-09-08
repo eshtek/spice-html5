@@ -672,9 +672,8 @@ SpiceMainConn.prototype.report_unhandled_agent_message = function(type)
         return;
     this.reported_agent_types[type] = true;
 
-    DEBUG > 0 && console.log("Agent message not handled: " +
-                             (names[type] || "type " + type) +
-                             " [ further notices suppressed ]");
+    this.log_warn("Agent message not handled: " + (names[type] || "type " + type) +
+                  " [ further notices suppressed ]");
 }
 
 SpiceMainConn.prototype.handle_clipboard_grab = function()

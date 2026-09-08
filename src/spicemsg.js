@@ -126,13 +126,13 @@ SpiceLinkMess.prototype =
         this.common_caps = [];
         for (i = 0; i < num_common_caps; i++)
         {
-            this.common_caps.unshift(dv.getUint32(at, true)); at += 4;
+            this.common_caps.push(dv.getUint32(at, true)); at += 4;
         }
 
         this.channel_caps = [];
         for (i = 0; i < num_channel_caps; i++)
         {
-            this.channel_caps.unshift(dv.getUint32(at, true)); at += 4;
+            this.channel_caps.push(dv.getUint32(at, true)); at += 4;
         }
     },
 
@@ -197,13 +197,13 @@ SpiceLinkReply.prototype =
         this.common_caps = [];
         for (i = 0; i < num_common_caps; i++)
         {
-            this.common_caps.unshift(dv.getUint32(at, true)); at += 4;
+            this.common_caps.push(dv.getUint32(at, true)); at += 4;
         }
 
         this.channel_caps = [];
         for (i = 0; i < num_channel_caps; i++)
         {
-            this.channel_caps.unshift(dv.getUint32(at, true)); at += 4;
+            this.channel_caps.push(dv.getUint32(at, true)); at += 4;
         }
     },
 }
@@ -272,7 +272,6 @@ SpiceMiniData.prototype =
     from_buffer: function(a, at)
     {
         at = at || 0;
-        var i;
         var dv = new DataView(a);
         this.type = dv.getUint16(at, true); at += 2;
         this.size = dv.getUint32(at, true); at += 4;

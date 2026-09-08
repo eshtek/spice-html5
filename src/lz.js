@@ -30,7 +30,6 @@ function lz_rgb32_decompress(in_buf, at, out_buf, type, default_alpha)
     var encoder = at;
     var op = 0;
     var ctrl;
-    var ctr = 0;
     var i = 0;
 
     for (ctrl = in_buf[encoder++]; (op * 4) < out_buf.length; ctrl = in_buf[encoder++])
@@ -39,8 +38,6 @@ function lz_rgb32_decompress(in_buf, at, out_buf, type, default_alpha)
         var len = ctrl >> 5;
         var ofs = (ctrl & 31) << 8;
 
-//if (type == LZ_IMAGE_TYPE_RGBA)
-//console.log(ctr++ + ": from " + (encoder + 28) + ", ctrl " + ctrl + ", len " + len + ", ofs " + ofs + ", op " + op);
         if (ctrl >= 32) {
 
             var code;
@@ -72,7 +69,6 @@ function lz_rgb32_decompress(in_buf, at, out_buf, type, default_alpha)
             ref -= ofs;
             if (ref == (op - 1)) {
                 var b = ref;
-//if (type == LZ_IMAGE_TYPE_RGBA) console.log("alpha " + out_buf[(b*4)+3] + " dupped into pixel " + op + " through pixel " + (op + len));
                 for (; len; --len) {
                     if (type == Constants.LZ_IMAGE_TYPE_RGBA)
                     {
@@ -86,7 +82,6 @@ function lz_rgb32_decompress(in_buf, at, out_buf, type, default_alpha)
                     op++;
                 }
             } else {
-//if (type == LZ_IMAGE_TYPE_RGBA) console.log("alpha copied to pixel " + op + " through " + (op + len) + " from " + ref);
                 for (; len; --len) {
                     if (type == Constants.LZ_IMAGE_TYPE_RGBA)
                     {
@@ -105,7 +100,6 @@ function lz_rgb32_decompress(in_buf, at, out_buf, type, default_alpha)
 
             if (type == Constants.LZ_IMAGE_TYPE_RGBA)
             {
-//console.log("alpha " + in_buf[encoder] + " set into pixel " + op);
                 out_buf[(op*4) + 3] = in_buf[encoder++];
             }
             else
@@ -123,7 +117,6 @@ function lz_rgb32_decompress(in_buf, at, out_buf, type, default_alpha)
             for (--ctrl; ctrl; ctrl--) {
                 if (type == Constants.LZ_IMAGE_TYPE_RGBA)
                 {
-//console.log("alpha " + in_buf[encoder] + " set into pixel " + op);
                     out_buf[(op*4) + 3] = in_buf[encoder++];
                 }
                 else

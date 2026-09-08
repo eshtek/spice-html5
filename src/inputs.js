@@ -565,19 +565,19 @@ function send_scancode(sc, scancode, down)
 var KEY_HOLD_MS = 12;
 var SHIFT_SETTLE_MS = 12;
 
-/* Resolves to { typed, skipped, aborted }: how many characters went out,
-   which distinct characters had no US-layout key, and whether the inputs
-   channel died mid-string. delay_ms is the gap between characters, which
-   paces a large paste so a guest's keyboard buffer is not flooded. */
 /* A server-side close leaves the channel's state at "ready", since the
    close handler only reports; the socket itself says whether keystrokes
    can still reach the guest. */
 function inputs_live(sc)
 {
-    return !!(sc && sc.inputs && sc.inputs.state === "ready" &&
-              sc.inputs.ws && sc.inputs.ws.readyState === WebSocket.OPEN);
+    return sc && sc.inputs && sc.inputs.state === "ready" &&
+           sc.inputs.ws && sc.inputs.ws.readyState === WebSocket.OPEN;
 }
 
+/* Resolves to { typed, skipped, aborted }: how many characters went out,
+   which distinct characters had no US-layout key, and whether the inputs
+   channel died mid-string. delay_ms is the gap between characters, which
+   paces a large paste so a guest's keyboard buffer is not flooded. */
 function typeText(sc, text, delay_ms)
 {
     var delay = typeof delay_ms === 'number' ? delay_ms : 25;

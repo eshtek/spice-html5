@@ -192,6 +192,11 @@
 
             connect(undefined);
             document.getElementById('sendCtrlAltDel').addEventListener('click', function(){ SpiceHtml5.sendCtrlAltDel(sc); });
+            document.getElementById('typeText').addEventListener('click', function(){
+                var text = prompt('Text to type into the guest');
+                if (text)
+                    SpiceHtml5.typeText(sc, text);
+            });
         </script>
 
     </head>
@@ -206,6 +211,7 @@
         <div id="Sidenav" class="SidenavClosed" style="width: 0;">
             <p class="closebtn" onclick="close_nav()">&#10006;</p>
             <button id="sendCtrlAltDel">Send Ctrl-Alt-Delete</button>
+            <button id="typeText">Type Text</button>
             <button id="debugLogs">Toggle Debug Logs</button>
             <div id="message-div" class="spice-message" style="display: none;"></div>
 

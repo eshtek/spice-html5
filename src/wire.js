@@ -50,8 +50,6 @@ SpiceWireReader.prototype =
     **----------------------------------------------------------------------*/
     inbound: function (mb)
     {
-        var at;
-
         /* Just buffer if we don't need anything yet */
         if (this.needed == 0)
         {
