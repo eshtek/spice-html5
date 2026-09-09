@@ -110,6 +110,7 @@ var MOTION_FALLBACK_MS = 50;
 function handle_mousemove(e)
 {
     var sc = this.sc;
+    release_vanished_buttons(sc, e.buttons);
     if (sc && sc.inputs && sc.inputs.state === "ready")
     {
         var inputs = sc.inputs;
@@ -243,17 +244,81 @@ function handle_contextmenu(e)
     return false;
 }
 
+/* The buttons a DOM event says are down, as a SPICE mask. The two
+   disagree on the order: DOM numbers them left, middle, right, and its
+   buttons bitmap is left, right, middle. */
+var DOM_BUTTONS_TO_SPICE = [
+    [1, Constants.SPICE_MOUSE_BUTTON_MASK_LEFT],
+    [2, Constants.SPICE_MOUSE_BUTTON_MASK_RIGHT],
+    [4, Constants.SPICE_MOUSE_BUTTON_MASK_MIDDLE],
+];
+
+function spice_buttons(dom_buttons)
+{
+    var mask = 0;
+    for (var i = 0; i < DOM_BUTTONS_TO_SPICE.length; i++)
+        if (dom_buttons & DOM_BUTTONS_TO_SPICE[i][0])
+            mask |= DOM_BUTTONS_TO_SPICE[i][1];
+    return mask;
+}
+
+var SPICE_BUTTON_OF_MASK = [
+    [Constants.SPICE_MOUSE_BUTTON_MASK_LEFT, Constants.SPICE_MOUSE_BUTTON_LEFT],
+    [Constants.SPICE_MOUSE_BUTTON_MASK_MIDDLE, Constants.SPICE_MOUSE_BUTTON_MIDDLE],
+    [Constants.SPICE_MOUSE_BUTTON_MASK_RIGHT, Constants.SPICE_MOUSE_BUTTON_RIGHT],
+];
+
+/* One release, from wherever the news arrived. */
+function send_release(sc, button, buttons_state)
+{
+    var release = new Messages.SpiceMsgcMouseRelease(button, buttons_state);
+    if (sc && sc.inputs)
+        sc.inputs.buttons_state = buttons_state;
+    var msg = new Messages.SpiceMiniData();
+    msg.build_msg(Constants.SPICE_MSGC_INPUTS_MOUSE_RELEASE, release);
+    if (sc && sc.inputs && sc.inputs.state === "ready")
+        sc.inputs.send_msg(msg);
+}
+
+/* A button can go up where this page never hears of it: over another
+   element, outside the window, or in another application entirely. The
+   guest would hold it down for good, turning every later move into a
+   drag. Any event that carries a buttons bitmap is a chance to notice
+   and let go of what is no longer held. */
+function release_vanished_buttons(sc, dom_buttons)
+{
+    if (! sc || ! sc.inputs)
+        return;
+    var held = sc.inputs.buttons_state;
+    var still = spice_buttons(dom_buttons);
+    var gone = held & ~still;
+    if (! gone)
+        return;
+    for (var i = 0; i < SPICE_BUTTON_OF_MASK.length; i++)
+    {
+        var mask = SPICE_BUTTON_OF_MASK[i][0];
+        if (gone & mask)
+        {
+            held &= ~mask;
+            send_release(sc, SPICE_BUTTON_OF_MASK[i][1], held);
+        }
+    }
+}
+
+/* Bound to the document, so a release outside the screen element still
+   reaches the guest; the element's own listener is gone. */
+function handle_document_mouseup(e)
+{
+    release_vanished_buttons(this.sc, e.buttons);
+}
+
 function handle_mouseup(e)
 {
     if (this.sc)
         flush_motion(this.sc);
-    var release = new Messages.SpiceMsgcMouseRelease(e.button + 1, 0);
-    if (this.sc && this.sc.inputs)
-        this.sc.inputs.buttons_state = 0;
-    var msg = new Messages.SpiceMiniData();
-    msg.build_msg(Constants.SPICE_MSGC_INPUTS_MOUSE_RELEASE, release);
-    if (this.sc && this.sc.inputs && this.sc.inputs.state === "ready")
-        this.sc.inputs.send_msg(msg);
+    /* The event names the button that went up; its bitmap names the ones
+       still down, which is also how a release missed elsewhere is caught. */
+    send_release(this.sc, e.button + 1, spice_buttons(e.buttons));
 
     e.preventDefault();
 }
@@ -654,6 +719,7 @@ export {
   handle_mousemove,
   handle_mousedown,
   handle_contextmenu,
+  handle_document_mouseup,
   handle_mouseup,
   handle_mousewheel,
   handle_keydown,

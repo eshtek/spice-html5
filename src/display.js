@@ -2207,6 +2207,14 @@ SpiceDisplayConn.prototype.hook_events = function()
         canvas.addEventListener('wheel', Inputs.handle_mousewheel);
         canvas.focus();
 
+        /* A release outside this element never reaches its listener, and
+           the guest would hold the button down for good. The document
+           hears it wherever on the page it happens; it runs after the
+           element's own listener, so an ordinary click still sends one
+           release, not two. */
+        this.documentMouseup = Inputs.handle_document_mouseup.bind({ sc: this.parent });
+        document.addEventListener('mouseup', this.documentMouseup);
+
         this.focusListener = () => this.parent.send_clipboard_grab()
         // send host clipboard when the canvas is rendered initially
         this.focusListener();
@@ -2230,6 +2238,7 @@ SpiceDisplayConn.prototype.unhook_events = function()
         canvas.removeEventListener('mouseover', handle_mouseover);
         canvas.removeEventListener('wheel', Inputs.handle_mousewheel);
         canvas.removeEventListener('focus', this.focusListener);
+        document.removeEventListener('mouseup', this.documentMouseup);
     }
 }
 
