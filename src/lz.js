@@ -173,9 +173,16 @@ function convert_spice_lz_to_web(context, lz_image)
     }
     else if (lz_image.type === Constants.LZ_IMAGE_TYPE_XXXA)
     {
+        /* Alpha alone in a 32 bit pixel, the same stream the RGBA form
+           carries after its colour pass.  A JPEG_ALPHA image's alpha
+           arrives this way, and a bottom-up one has to be turned over
+           like any other: the JPEG beside it is not, so leaving this
+           plane alone made the two mirrors of each other. */
         var u8 = new Uint8Array(lz_image.data);
         var ret = context.createImageData(lz_image.width, lz_image.height);
         lz_rgb32_decompress(u8, 0, ret.data, Constants.LZ_IMAGE_TYPE_RGBA, false);
+        if (!lz_image.top_down)
+            flip_image_data(ret);
     }
     else if (lz_image.type === Constants.LZ_IMAGE_TYPE_A8)
     {
