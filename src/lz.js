@@ -158,11 +158,18 @@ function convert_spice_lz_to_web(context, lz_image)
         var ret = context.createImageData(lz_image.width, lz_image.height);
 
         at = lz_rgb32_decompress(u8, 0, ret.data, Constants.LZ_IMAGE_TYPE_RGB32, lz_image.type != Constants.LZ_IMAGE_TYPE_RGBA);
-        if (!lz_image.top_down)
-            flip_image_data(ret);
 
+        /* The alpha plane is a second pass over the same buffer, written
+           in the same row order as the colour pass, so both have to be in
+           place before the image is turned the right way up.  Flipping
+           between them left the two planes mirrors of each other: a glyph
+           mask's empty rows took the opaque alpha of its full ones and
+           painted solid black. */
         if (lz_image.type == Constants.LZ_IMAGE_TYPE_RGBA)
             lz_rgb32_decompress(u8, at, ret.data, Constants.LZ_IMAGE_TYPE_RGBA, false);
+
+        if (!lz_image.top_down)
+            flip_image_data(ret);
     }
     else if (lz_image.type === Constants.LZ_IMAGE_TYPE_XXXA)
     {
