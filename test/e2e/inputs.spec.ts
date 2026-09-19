@@ -20,6 +20,34 @@ test("a key press sends make and break scancodes", async ({ client, spice }) => 
   ]);
 });
 
+test("Num Lock is the plain scancode a guest toggles on, not the E0-prefixed one", async ({ client, spice }) => {
+  await client.surface().click({ position: { x: 10, y: 10 } });
+  const before = await spice.mark();
+  await client.page.keyboard.press("NumLock");
+  await spice.waitFor("inputs", "key_up");
+  const keys = (await spice.inbound("inputs", "*", before)).filter((r) => r.name.startsWith("key_"));
+  expect(codes(keys)).toEqual([
+    ["key_down", 0x45],
+    ["key_up", 0xc5],
+  ]);
+});
+
+test("F13 and up use the scancodes QEMU reads as those keys", async ({ client, spice }) => {
+  await client.surface().click({ position: { x: 10, y: 10 } });
+  const before = await spice.mark();
+  /* Playwright's keyboard has no F13. */
+  await client.pressWithLocks("F13", 124, {});
+  await client.pressWithLocks("F17", 128, {});
+  await spice.waitFor("inputs", "key_up", 2);
+  const keys = (await spice.inbound("inputs", "*", before)).filter((r) => r.name.startsWith("key_"));
+  expect(codes(keys)).toEqual([
+    ["key_down", 0x5d],
+    ["key_up", 0xdd],
+    ["key_down", 0x03e0],
+    ["key_up", 0x83e0],
+  ]);
+});
+
 test("Meta uses the real extended scancode with the break bit in the high byte", async ({ client, spice }) => {
   await client.surface().click({ position: { x: 10, y: 10 } });
   const before = await spice.mark();
