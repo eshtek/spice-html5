@@ -70,7 +70,10 @@ code_to_scancode["F7"]                        = 0x41;
 code_to_scancode["F8"]                        = 0x42;
 code_to_scancode["F9"]                        = 0x43;
 code_to_scancode["F10"]                       = 0x44;
-code_to_scancode["Pause"]                     = 0x45;
+/* Num Lock is plain 0x45.  The 0xE0-prefixed form is the Windows
+   convention; a QEMU guest reads E0 45 as an unrelated key, so the
+   press never toggled anything.  Pause is further down. */
+code_to_scancode["NumLock"]                   = 0x45;
 code_to_scancode["ScrollLock"]                = 0x46;
 code_to_scancode["Numpad7"]                   = 0x47;
 code_to_scancode["Numpad8"]                   = 0x48;
@@ -90,20 +93,23 @@ code_to_scancode["IntlBackslash"]             = 0x56;
 code_to_scancode["F11"]                       = 0x57;
 code_to_scancode["F12"]                       = 0x58;
 code_to_scancode["NumpadEqual"]               = 0x59;
-code_to_scancode["F13"]                       = 0x64;
-code_to_scancode["F14"]                       = 0x65;
-code_to_scancode["F15"]                       = 0x66;
-code_to_scancode["F16"]                       = 0x67;
-code_to_scancode["F17"]                       = 0x68;
-code_to_scancode["F18"]                       = 0x69;
-code_to_scancode["F19"]                       = 0x6A;
-code_to_scancode["F20"]                       = 0x6B;
-code_to_scancode["F21"]                       = 0x6C;
-code_to_scancode["F22"]                       = 0x6D;
-code_to_scancode["F23"]                       = 0x6E;
+/* F13 to F24 as QEMU's keymap (keycodemapdb, AT set 1) has them.  The
+   0x64-0x6E run a PC keyboard sends means other keys to a QEMU guest:
+   F13 arrived as Open, F14 as Paste, F22 as F23. */
+code_to_scancode["F13"]                       = 0x5D;
+code_to_scancode["F14"]                       = 0x5E;
+code_to_scancode["F15"]                       = 0x5F;
+code_to_scancode["F16"]                       = 0x55;
+code_to_scancode["F17"]                       = 0xE0 | (0x03 << 8);
+code_to_scancode["F18"]                       = 0xE0 | (0x77 << 8);
+code_to_scancode["F19"]                       = 0xE0 | (0x04 << 8);
+code_to_scancode["F20"]                       = 0x5A;
+code_to_scancode["F21"]                       = 0x74;
+code_to_scancode["F22"]                       = 0xE0 | (0x79 << 8);
+code_to_scancode["F23"]                       = 0x6D;
 code_to_scancode["KanaMode"]                  = 0x70;
 code_to_scancode["IntlRo"]                    = 0x73;
-code_to_scancode["F24"]                       = 0x76;
+code_to_scancode["F24"]                       = 0x6F;
 code_to_scancode["Convert"]                   = 0x79;
 code_to_scancode["NonConvert"]                = 0x7B;
 code_to_scancode["IntlYen"]                   = 0x7D;
@@ -117,12 +123,13 @@ code_to_scancode["LaunchApp2"]                = 0xE0 | (0x21 << 8);
 code_to_scancode["MediaPlayPause"]            = 0xE0 | (0x22 << 8);
 code_to_scancode["MediaStop"]                 = 0xE0 | (0x24 << 8);
 code_to_scancode["VolumeDown"]                = 0xE0 | (0x2E << 8);
+code_to_scancode["AudioVolumeDown"]           = 0xE0 | (0x2E << 8);
 code_to_scancode["VolumeUp"]                  = 0xE0 | (0x30 << 8);
+code_to_scancode["AudioVolumeUp"]             = 0xE0 | (0x30 << 8);
 code_to_scancode["BrowserHome"]               = 0xE0 | (0x32 << 8);
 code_to_scancode["NumpadDivide"]              = 0xE0 | (0x35 << 8);
 code_to_scancode["PrintScreen"]               = 0xE0 | (0x37 << 8);
 code_to_scancode["AltRight"]                  = 0xE0 | (0x38 << 8);
-code_to_scancode["NumLock"]                   = 0xE0 | (0x45 << 8);
 code_to_scancode["Pause"]                     = 0xE0 | (0x46 << 8);
 code_to_scancode["Home"]                      = 0xE0 | (0x47 << 8);
 code_to_scancode["ArrowUp"]                   = 0xE0 | (0x48 << 8);
