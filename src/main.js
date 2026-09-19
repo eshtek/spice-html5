@@ -101,7 +101,9 @@ import { resize_helper, handle_resize } from './resize.js';
 **          sync_lock_keys (optional)  If true, a keystroke whose Num, Caps
 **                                  or Scroll Lock state differs from the
 **                                  guest's is preceded by a press of that
-**                                  lock key, so both sides agree.
+**                                  lock key, so both sides agree.  On an
+**                                  Apple keyboard, which has no Num Lock,
+**                                  a keypad key turns the guest's on.
 **
 **  Throws error if there are troubles.  Requires a modern (by 2012 standards)
 **      browser, including WebSocket and WebSocket.binaryType == arraybuffer

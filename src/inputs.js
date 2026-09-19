@@ -448,6 +448,16 @@ function sync_lock_keys(e, sc)
     {
         lock = LOCK_KEYS[i];
         var want = e.getModifierState(lock.name);
+        if (lock.name === "NumLock" && keyboard_lacks_num_lock())
+        {
+            /* Such a keypad always types digits and the browser always
+               reports Num Lock off, so that report says nothing: leave
+               the guest alone until the keypad is used, then make sure
+               it types digits there too. */
+            if ((e.code || "").indexOf("Numpad") !== 0)
+                continue;
+            want = true;
+        }
         var have = !!(inputs.keyboard_modifiers & lock.flag);
         if (want === have || inputs.lock_pending[lock.name] > now)
             continue;
@@ -457,6 +467,12 @@ function sync_lock_keys(e, sc)
         send_scancode(sc, lock.code, true);
         window.setTimeout(release_lock_key, KEY_HOLD_MS, sc, lock.code);
     }
+}
+
+/* Apple keyboards have no Num Lock; read at call time, not load time. */
+function keyboard_lacks_num_lock()
+{
+    return /Mac|iPhone|iPad|iPod/.test(navigator.platform || "");
 }
 
 function release_lock_key(sc, code)

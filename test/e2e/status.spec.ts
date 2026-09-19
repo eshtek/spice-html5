@@ -129,6 +129,37 @@ test.describe("sync_lock_keys", () => {
     ]);
   });
 
+  test("an Apple keyboard, which has no Num Lock, turns the guest's on at the first keypad key", async ({ client, spice }) => {
+    await client.connectReady({ sync_lock_keys: true });
+    await client.setPlatform("MacIntel");
+    await spice.send("display", "surfaceCreate", { width: 320, height: 240 });
+    await expect(client.surface()).toBeVisible();
+    /* The browser reports Num Lock off there whatever the keypad types,
+       so an ordinary key leaves a guest that has it on alone. */
+    await spice.send("inputs", "keyModifiers", { modifiers: 2 });
+    await expect.poll(() => client.modifiers()).toHaveLength(2);
+    const before = await spice.mark();
+    await client.pressWithLocks("KeyA", 65, { NumLock: false });
+    await spice.waitFor("inputs", "key_up");
+    expect(keys(await spice.inbound("inputs", "*", before))).toEqual([
+      ["key_down", 0x1e],
+      ["key_up", 0x9e],
+    ]);
+    /* With the guest's off, a keypad digit would arrive as End. */
+    await spice.send("inputs", "keyModifiers", { modifiers: 0 });
+    await expect.poll(() => client.modifiers()).toHaveLength(3);
+    const keypad = await spice.mark();
+    await client.pressWithLocks("Numpad1", 97, { NumLock: false });
+    /* Counted from the connection's start: the A, the 1, the Num Lock. */
+    await spice.waitFor("inputs", "key_up", 3);
+    expect(keys(await spice.inbound("inputs", "*", keypad))).toEqual([
+      ["key_down", 0x45],
+      ["key_down", 0x4f],
+      ["key_up", 0xcf],
+      ["key_up", 0xc5],
+    ]);
+  });
+
   test("without the option a mismatch is left alone", async ({ client, spice }) => {
     await client.connectReady();
     await spice.send("display", "surfaceCreate", { width: 320, height: 240 });

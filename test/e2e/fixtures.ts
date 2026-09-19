@@ -298,6 +298,10 @@ export class SpiceClient {
     );
   }
 
+  setPlatform(platform: string) {
+    return this.page.evaluate((p) => { Object.defineProperty(navigator, "platform", { get: () => p, configurable: true }); }, platform);
+  }
+
   channelStates() {
     return this.page.evaluate(() => (window as unknown as { harness: { channelStates: () => Record<string, string> | null } }).harness.channelStates());
   }
@@ -429,6 +433,9 @@ export const test = base.extend<{ client: SpiceClient; spice: SpiceControl }, { 
   },
   client: async ({ page, spice }, use) => {
     await page.addInitScript(COUNTER_SCRIPT);
+    /* Lock-key sync reads the platform; pin it so a Mac host runs the same
+       tests as CI. setPlatform() overrides it per test. */
+    await page.addInitScript(() => Object.defineProperty(navigator, "platform", { get: () => "Linux x86_64", configurable: true }));
     const client = new SpiceClient(page, spice);
     await client.open();
     await use(client);
