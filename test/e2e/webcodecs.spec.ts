@@ -16,46 +16,65 @@ const CODECS = [
 async function encodeFrames(page: import("@playwright/test").Page, o: { codec: string; width: number; height: number; frames: number; flip?: boolean; frameOffset?: number }) {
   return page.evaluate(
     async ({ codec, width, height, frames, flip, frameOffset, palette, quadrant }) => {
-      const out: string[] = [];
-      const enc = new VideoEncoder({
-        output: (c) => {
-          const b = new Uint8Array(c.byteLength);
-          c.copyTo(b);
-          let s = "";
-          for (let i = 0; i < b.length; i += 4096) s += String.fromCharCode(...b.subarray(i, i + 4096));
-          out.push(btoa(s));
-        },
-        error: (e) => {
-          throw e;
-        },
-      });
-      const cfg: VideoEncoderConfig = { codec, width, height, bitrate: 4_000_000, framerate: 30, latencyMode: "realtime" };
-      if (codec.startsWith("avc1")) cfg.avc = { format: "annexb" };
-      enc.configure(cfg);
       const canvas = document.createElement("canvas");
       canvas.width = width;
       canvas.height = height;
       const ctx = canvas.getContext("2d")!;
       const rgb = (c: number[]) => `rgb(${c[0]},${c[1]},${c[2]})`;
-      for (let i = 0; i < frames; i++) {
-        const tl = palette[(i + (frameOffset ?? 0)) % palette.length];
-        const q = [
-          [tl, quadrant.topRight],
-          [quadrant.bottomLeft, quadrant.bottomRight],
-        ];
-        for (let r = 0; r < 2; r++)
-          for (let c = 0; c < 2; c++) {
-            const row = flip ? 1 - r : r;
-            ctx.fillStyle = rgb(q[row][c]);
-            ctx.fillRect(c * (width / 2), r * (height / 2), width / 2, height / 2);
-          }
-        const frame = new VideoFrame(canvas, { timestamp: i * 33333 });
-        enc.encode(frame, { keyFrame: i === 0 });
-        frame.close();
+      const encode = async (latencyMode: LatencyMode | undefined) => {
+        const out: string[] = [];
+        let failed: DOMException | undefined;
+        const enc = new VideoEncoder({
+          output: (c) => {
+            const b = new Uint8Array(c.byteLength);
+            c.copyTo(b);
+            let s = "";
+            for (let i = 0; i < b.length; i += 4096) s += String.fromCharCode(...b.subarray(i, i + 4096));
+            out.push(btoa(s));
+          },
+          error: (e) => {
+            failed = e;
+          },
+        });
+        const cfg: VideoEncoderConfig = { codec, width, height, bitrate: 4_000_000, framerate: 30 };
+        if (latencyMode) cfg.latencyMode = latencyMode;
+        if (codec.startsWith("avc1")) cfg.avc = { format: "annexb" };
+        enc.configure(cfg);
+        for (let i = 0; i < frames && enc.state === "configured"; i++) {
+          const tl = palette[(i + (frameOffset ?? 0)) % palette.length];
+          const q = [
+            [tl, quadrant.topRight],
+            [quadrant.bottomLeft, quadrant.bottomRight],
+          ];
+          for (let r = 0; r < 2; r++)
+            for (let c = 0; c < 2; c++) {
+              const row = flip ? 1 - r : r;
+              ctx.fillStyle = rgb(q[row][c]);
+              ctx.fillRect(c * (width / 2), r * (height / 2), width / 2, height / 2);
+            }
+          const frame = new VideoFrame(canvas, { timestamp: i * 33333 });
+          enc.encode(frame, { keyFrame: i === 0 });
+          frame.close();
+        }
+        await enc.flush().catch((e) => {
+          failed = failed ?? e;
+        });
+        if (enc.state !== "closed") enc.close();
+        if (failed) throw failed;
+        return out;
+      };
+      /* Realtime first, the way a SPICE server encodes. Firefox on macOS
+         cannot do it for H.264: realtime there means VideoToolbox's low
+         latency rate control, which needs the hardware encoder, and the
+         content process's sandbox keeps that out of reach (the session
+         fails with kVTParameterErr, although isConfigSupported says yes).
+         The fixture only has to be a valid stream, so the default mode
+         serves; baseline H.264 has no frame reordering either way. */
+      try {
+        return await encode("realtime");
+      } catch {
+        return await encode(undefined);
       }
-      await enc.flush();
-      enc.close();
-      return out;
     },
     { ...o, palette: PALETTE as unknown as number[][], quadrant: QUADRANT as unknown as Record<string, number[]> },
   );
