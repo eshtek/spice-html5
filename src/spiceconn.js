@@ -120,6 +120,8 @@ function SpiceConn(o)
         this.touch_focus = o.touch_focus;
     if (o.touch_options !== undefined)
         this.touch_options = o.touch_options;
+    if (o.touch_mode !== undefined)
+        this.touch_mode = o.touch_mode;
     if (o.ontouchzoom !== undefined)
         this.ontouchzoom = o.ontouchzoom;
     if (o.ontouchpan !== undefined)

@@ -201,3 +201,51 @@ test("a pinch is reported to a page that asked, and the guest hears none of it",
   expect(zooms.reduce((z, r) => z * r, 1)).toBeCloseTo(3, 0);
   expect((await spice.inbound("inputs", "*", before)).filter((e) => e.name.startsWith("mouse_"))).toEqual([]);
 });
+
+test("trackpad mode: a moving finger moves a drawn pointer, and a tap clicks where it stands", async ({ client, spice }) => {
+  await client.page.evaluate(() => ((window as unknown as { harness: { sc: { touch_mode?: string } } }).harness.sc.touch_mode = "trackpad"));
+  const before = await spice.mark();
+  /* Slowly, so the pointer moves as far as the finger does once it is past
+     the dead zone (two of the twenty steps): 54 right, 27 down from the middle. */
+  await touch("touchStart", [{ x: 20, y: 20 }]);
+  for (let i = 1; i <= 20; i++) {
+    await touch("touchMove", [{ x: 20 + i * 3, y: 20 + i * 1.5 }]);
+    await client.page.waitForTimeout(20);
+  }
+  await touch("touchEnd", []);
+  /* The fake server acknowledges nothing by itself, so the client parks the
+     newest position once its window is full; an ack lets it go. */
+  await spice.send("inputs", "mouseMotionAck");
+  await spice.send("inputs", "mouseMotionAck");
+  await client.page.waitForTimeout(200);
+  let events = (await spice.inbound("inputs", "*", before)).filter((e) => e.name.startsWith("mouse_"));
+  expect(events.every((e) => e.name === "mouse_position")).toBe(true);
+  const last = events.at(-1)!.fields as { x: number; y: number };
+  expect(Math.abs(last.x - 214)).toBeLessThanOrEqual(2);
+  expect(Math.abs(last.y - 147)).toBeLessThanOrEqual(2);
+
+  const pointer = client.page.locator(".spice-touch-pointer");
+  await expect(pointer).toBeVisible();
+  const bb = (await client.surface().boundingBox())!;
+  const pb = (await pointer.boundingBox())!;
+  expect(Math.abs(pb.x - bb.x - 214)).toBeLessThanOrEqual(4);
+  expect(Math.abs(pb.y - bb.y - 147)).toBeLessThanOrEqual(4);
+
+  /* A tap in the far corner clicks at the pointer, not under the finger. */
+  const tapped = await spice.mark();
+  await touch("touchStart", [{ x: 5, y: 5 }]);
+  await touch("touchEnd", []);
+  await spice.waitFor("inputs", "mouse_release");
+  events = (await spice.inbound("inputs", "*", tapped)).filter((e) => e.name.startsWith("mouse_"));
+  expect(events.map((e) => e.name)).toEqual(["mouse_press", "mouse_release"]);
+
+  /* Back in direct mode the drawn pointer goes, and a tap lands under the finger again. */
+  await client.page.evaluate(() => ((window as unknown as { harness: { sc: { touch_mode?: string } } }).harness.sc.touch_mode = "direct"));
+  const direct = await spice.mark();
+  await touch("touchStart", [{ x: 40, y: 30 }]);
+  await touch("touchEnd", []);
+  await spice.waitFor("inputs", "mouse_release");
+  await expect(pointer).toBeHidden();
+  const pos = (await spice.inbound("inputs", "mouse_position", direct))[0].fields as { x: number; y: number };
+  expect(Math.abs(pos.x - 40)).toBeLessThanOrEqual(1);
+});

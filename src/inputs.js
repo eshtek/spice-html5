@@ -767,6 +767,15 @@ function typeText(sc, text, delay_ms)
     });
 }
 
+/* The US-layout key that types a character: { code, shift }, or undefined.
+   For a page holding a modifier of its own down, where the character has to
+   go out as its key (Ctrl and the C key) and not as typed text. */
+function keyForChar(ch)
+{
+    var entry = US_TYPEABLE[ch];
+    return entry ? { code: entry[0], shift: !! entry[1] } : undefined;
+}
+
 /* A key named as KeyboardEvent.code names it ("Backspace", "ArrowLeft",
    "ControlLeft"), for a page with keys of its own to offer: a soft keyboard
    reports no codes, and a phone has no Escape. False if the key is unknown
@@ -812,6 +821,7 @@ export {
   typeText,
   sendKey,
   tapKey,
+  keyForChar,
   pointer_move,
   pointer_press,
   pointer_release,

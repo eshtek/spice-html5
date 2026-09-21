@@ -24,7 +24,7 @@ import { SpiceCursorConn } from './cursor.js';
 import { SpiceConn } from './spiceconn.js';
 import { DEBUG } from './utils.js';
 import { SpiceFileXferTask } from './filexfer.js';
-import { SpiceInputsConn, sendCtrlAltDel, typeText, sendKey, tapKey } from './inputs.js';
+import { SpiceInputsConn, sendCtrlAltDel, typeText, sendKey, tapKey, keyForChar } from './inputs.js';
 import { SpiceDisplayConn } from './display.js';
 import { SpicePlaybackConn } from './playback.js';
 import { SpiceRecordConn } from './record.js';
@@ -112,6 +112,11 @@ import { resize_helper, handle_resize } from './resize.js';
 **                                  a field of its own, to keep a soft
 **                                  keyboard up, sets this false; it is read
 **                                  on every touch, so it can change live.
+**          touch_mode  (optional)  'direct' (default): the pointer goes
+**                                  where the finger is.  'trackpad': a
+**                                  moving finger moves a drawn pointer from
+**                                  where it stands and a tap clicks there.
+**                                  Read as each touch begins.
 **          touch_options (optional)  Overrides for the gesture thresholds
 **                                  in touch.js (slop_px, long_press_ms, ...).
 **          ontouchzoom (optional)  If given, two fingers moving apart or
@@ -879,4 +884,5 @@ export {
   typeText,
   sendKey,
   tapKey,
+  keyForChar,
 };

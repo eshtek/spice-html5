@@ -29,6 +29,14 @@
 **          one finger moving       left button held: a drag
 **          two fingers moving      wheel, the content following the fingers
 **          two fingers spreading   zoom, if the page asked to be told of it
+**
+**      That is the direct mode: the pointer goes where the finger is. A
+**      fingertip covers the thing it is aiming at, and a guest drawn to fit
+**      a phone has buttons a few page pixels wide, so there is a trackpad
+**      mode too (touch_mode: 'trackpad'). The screen becomes the pad of a
+**      laptop: a moving finger moves the pointer from wherever it is and
+**      presses nothing, a tap clicks where the pointer stands, and a tap
+**      followed at once by a moving finger drags. The rest is unchanged.
 **          two finger tap          right click
 **          three finger tap        middle click
 **--------------------------------------------------------------------------*/
@@ -60,7 +68,11 @@ var TOUCH_DEFAULTS = {
    A sink may also carry zoom(ratio, cx, cy) and pan(dx, dy), in page
    pixels. With zoom, two fingers moving apart or together are a pinch
    rather than a scroll; with panning() true, which a zoomed page answers,
-   two fingers moving together slide the view instead of turning the wheel. */
+   two fingers moving together slide the view instead of turning the wheel.
+
+   With trackpad() true as a touch begins, the gesture is a trackpad's:
+   nudge(dx, dy), in page pixels, moves the pointer, and clicks land where
+   it stands, so no move goes before them. */
 function TouchGestures(sink, options, timers)
 {
     this.sink = sink;
@@ -92,9 +104,10 @@ TouchGestures.prototype =
             this.first = id;
             this.origin = { x: x, y: y };
             this.t0 = t;
+            this.pad = !! (this.sink.trackpad && this.sink.nudge && this.sink.trackpad());
             this.arm_long_press();
         }
-        else if (this.state === 'pending' || this.state === 'drag')
+        else if (this.state === 'pending' || this.state === 'drag' || this.state === 'glide')
         {
             /* A second finger ends whatever the first was doing; a button
                left down here would turn the scroll into a drag. */
@@ -120,12 +133,36 @@ TouchGestures.prototype =
         var p = this.points[id];
         if (! p)
             return;
+        var was_cx = p.cx, was_cy = p.cy;
         p.x = x;
         p.y = y;
         p.cx = cx === undefined ? x : cx;
         p.cy = cx === undefined ? y : cy;
 
-        if (this.state === 'pending' && this.travel(p) > this.opts.slop_px)
+        if (this.pad && this.state === 'pending' && this.travel(p) > this.opts.slop_px)
+        {
+            /* A finger that moves right after a tap is dragging what the
+               tap picked up; any other moving finger only points. */
+            this.disarm_long_press();
+            var last = this.last_tap;
+            if (last && t - last.t <= this.opts.double_tap_ms)
+            {
+                this.state = 'drag';
+                this.grab(Constants.SPICE_MOUSE_BUTTON_LEFT);
+            }
+            else
+                this.state = 'glide';
+            this.last_tap = undefined;
+            /* From here on, not from where the finger landed: the travel
+               that proved it a move is a trackpad's dead zone, and sent in
+               one piece it would read as a flick. */
+            this.sink.nudge(p.cx - was_cx, p.cy - was_cy);
+        }
+        else if (this.pad && (this.state === 'glide' || this.state === 'drag') && id === this.first)
+        {
+            this.sink.nudge(p.cx - was_cx, p.cy - was_cy);
+        }
+        else if (this.state === 'pending' && this.travel(p) > this.opts.slop_px)
         {
             /* The button goes down where the finger first landed, which
                is what it meant to grab, not where it was noticed moving. */
@@ -169,8 +206,13 @@ TouchGestures.prototype =
         }
         else if (this.state === 'drag' && id === this.first)
         {
-            this.sink.move(x, y);
+            if (! this.pad)
+                this.sink.move(x, y);
             this.let_go();
+            this.state = this.count ? 'spent' : 'idle';
+        }
+        else if (this.state === 'glide' && id === this.first)
+        {
             this.state = this.count ? 'spent' : 'idle';
         }
         else if (this.count === 0)
@@ -308,6 +350,14 @@ TouchGestures.prototype =
            the spot in pixels. Two taps of a finger never land that close,
            so the second goes where the first did. */
         var last = this.last_tap;
+        if (this.pad)
+        {
+            /* The pointer has not moved between two taps, so they land on
+               one spot as they are; the time is kept for a drag to follow. */
+            this.last_tap = { x: x, y: y, cx: p.cx0, cy: p.cy0, t: t };
+            this.click(x, y, Constants.SPICE_MOUSE_BUTTON_LEFT);
+            return;
+        }
         if (last && t - last.t <= this.opts.double_tap_ms &&
             Math.abs(p.cx0 - last.cx) <= this.opts.double_tap_px &&
             Math.abs(p.cy0 - last.cy) <= this.opts.double_tap_px)
@@ -323,7 +373,8 @@ TouchGestures.prototype =
 
     click: function(x, y, button)
     {
-        this.sink.move(x, y);
+        if (! this.pad)
+            this.sink.move(x, y);
         this.sink.press(button);
         this.sink.release(button);
     },
@@ -383,6 +434,104 @@ function clamp(v, max)
     return Math.max(0, Math.min(max, v));
 }
 
+/* The pointer a trackpad moves. With a mouse the browser draws the
+   guest's cursor as its own, under the mouse; a touchscreen has no such
+   pointer to dress, so the cursor is an image laid over the screen at the
+   spot the guest has been told of. It sits inside the screen element, in
+   that element's own pixels, so any CSS scale on the screen carries it. */
+var ARROW = 'data:image/svg+xml,' + encodeURIComponent(
+    '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="24" viewBox="0 0 16 24">' +
+    '<path d="M1 1v19l4.6-4.4 3 7.2 2.8-1.2-3-7.1H15z" fill="#fff" stroke="#000" stroke-width="1.4" stroke-linejoin="round"/></svg>');
+
+function TouchPointer(sc, canvas)
+{
+    this.sc = sc;
+    this.canvas = canvas;
+    this.x = undefined;
+    this.y = undefined;
+}
+
+TouchPointer.prototype =
+{
+    /* Where the guest last had the pointer, if it has been anywhere. */
+    start: function()
+    {
+        var inputs = this.sc.inputs;
+        if (this.x === undefined || this.sc.mouse_mode !== Constants.SPICE_MOUSE_MODE_CLIENT)
+        {
+            var known = inputs && inputs.mousex !== undefined;
+            this.x = known ? inputs.mousex : Math.round(this.canvas.width / 2);
+            this.y = known ? inputs.mousey : Math.round(this.canvas.height / 2);
+        }
+    },
+
+    nudge: function(dx, dy)
+    {
+        this.start();
+        this.x = clamp(this.x + dx, this.canvas.width - 1);
+        this.y = clamp(this.y + dy, this.canvas.height - 1);
+        this.show();
+        return { x: Math.round(this.x), y: Math.round(this.y) };
+    },
+
+    show: function()
+    {
+        if (! this.img)
+        {
+            this.img = document.createElement('img');
+            this.img.className = 'spice-touch-pointer';
+            this.img.style.position = 'absolute';
+            this.img.style.pointerEvents = 'none';
+            this.img.style.zIndex = '1';
+        }
+        if (this.img.parentNode !== this.canvas.parentNode && this.canvas.parentNode)
+        {
+            if (window.getComputedStyle(this.canvas.parentNode).position === 'static')
+                this.canvas.parentNode.style.position = 'relative';
+            this.canvas.parentNode.appendChild(this.img);
+        }
+        this.refresh();
+    },
+
+    /* The shape is the guest's own when it has sent one, so the pointer
+       turns into a text bar or a resize arrow as it would under a mouse. */
+    refresh: function()
+    {
+        if (! this.img || this.x === undefined)
+            return;
+        var shape = this.sc.cursor && this.sc.cursor.last_shape;
+        var hidden = this.sc.cursor && this.sc.cursor.shape_hidden;
+        var src = shape ? 'data:image/png,' + shape.pngstr : ARROW;
+        if (this.img.getAttribute('src') !== src)
+            this.img.setAttribute('src', src);
+        var hot_x = shape ? shape.cursor.header.hot_spot_x : 1;
+        var hot_y = shape ? shape.cursor.header.hot_spot_y : 1;
+        this.img.style.display = hidden ? 'none' : 'block';
+        this.img.style.left = (this.canvas.offsetLeft + this.x - hot_x) + 'px';
+        this.img.style.top = (this.canvas.offsetTop + this.y - hot_y) + 'px';
+    },
+
+    hide: function()
+    {
+        if (this.img)
+            this.img.style.display = 'none';
+    },
+
+    remove: function()
+    {
+        if (this.img && this.img.parentNode)
+            this.img.parentNode.removeChild(this.img);
+        this.img = undefined;
+    },
+};
+
+/* A finger moving slowly places the pointer to the pixel; a flick crosses
+   the screen. Page pixels per event in, a multiplier out. */
+function pointer_gain(distance)
+{
+    return Math.max(1, Math.min(2.5, 1 + (distance - 4) * 0.12));
+}
+
 function hook_touch(canvas, sc)
 {
     if (sc.touch_input === false || canvas.spice_touch || typeof window.PointerEvent === 'undefined')
@@ -395,7 +544,19 @@ function hook_touch(canvas, sc)
         wheel: function(up) { Inputs.pointer_wheel(sc, up); },
         pan: function(dx, dy) { if (sc.ontouchpan) sc.ontouchpan(dx, dy); },
         panning: function() { return !! sc.touch_panning; },
+        trackpad: function() { return sc.touch_mode === 'trackpad'; },
+        nudge: function(dx, dy)
+        {
+            /* The finger's travel on the glass, in the guest's pixels. */
+            var shown = canvas.getBoundingClientRect().width;
+            var scale = shown > 0 ? canvas.width / shown : 1;
+            var gain = pointer_gain(Math.sqrt(dx * dx + dy * dy)) * scale;
+            var at = pointer.nudge(dx * gain, dy * gain);
+            Inputs.pointer_move(sc, at.x, at.y);
+        },
     };
+    var pointer = new TouchPointer(sc, canvas);
+    sc.touch_pointer = pointer;
     /* Only a page that will act on a pinch gets one; for any other, two
        fingers always scroll. */
     if (sc.ontouchzoom)
@@ -430,6 +591,8 @@ function hook_touch(canvas, sc)
             if (sc.touch_focus !== false)
                 canvas.focus({ preventScroll: true });
             try { canvas.setPointerCapture(e.pointerId); } catch (err) { }
+            if (sc.touch_mode !== 'trackpad')
+                pointer.hide();
             var p = at(e);
             gestures.down(e.pointerId, p.x, p.y, e.timeStamp, e.clientX, e.clientY);
         },
@@ -469,7 +632,7 @@ function hook_touch(canvas, sc)
     var touch_action = canvas.style.touchAction;
     canvas.style.touchAction = 'none';
 
-    canvas.spice_touch = { gestures: gestures, listeners: listeners, touch_action: touch_action };
+    canvas.spice_touch = { gestures: gestures, listeners: listeners, touch_action: touch_action, pointer: pointer };
 }
 
 function unhook_touch(canvas)
@@ -478,6 +641,9 @@ function unhook_touch(canvas)
     if (! touch)
         return;
     touch.gestures.reset();
+    touch.pointer.remove();
+    if (touch.pointer.sc.touch_pointer === touch.pointer)
+        touch.pointer.sc.touch_pointer = undefined;
     for (var name in touch.listeners)
         canvas.removeEventListener(name, touch.listeners[name]);
     canvas.style.touchAction = touch.touch_action;
@@ -486,6 +652,7 @@ function unhook_touch(canvas)
 
 export {
   TouchGestures,
+  pointer_gain,
   hook_touch,
   unhook_touch,
 };
