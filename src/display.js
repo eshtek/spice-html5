@@ -23,6 +23,7 @@ import * as Messages from './spicemsg.js';
 import * as Quic from './quic.js';
 import * as Utils from './utils.js';
 import * as Inputs from './inputs.js';
+import { hook_touch, unhook_touch } from './touch.js';
 import { Constants } from './enums.js';
 import { SpiceConn } from './spiceconn.js';
 import { SpiceRect } from './spicetype.js';
@@ -2205,6 +2206,7 @@ SpiceDisplayConn.prototype.hook_events = function()
         canvas.addEventListener('mouseout', handle_mouseout);
         canvas.addEventListener('mouseover', handle_mouseover);
         canvas.addEventListener('wheel', Inputs.handle_mousewheel);
+        hook_touch(canvas, this.parent);
         canvas.focus();
 
         /* A release outside this element never reaches its listener, and
@@ -2237,6 +2239,7 @@ SpiceDisplayConn.prototype.unhook_events = function()
         canvas.removeEventListener('mouseout', handle_mouseout);
         canvas.removeEventListener('mouseover', handle_mouseover);
         canvas.removeEventListener('wheel', Inputs.handle_mousewheel);
+        unhook_touch(canvas);
         canvas.removeEventListener('focus', this.focusListener);
         document.removeEventListener('mouseup', this.documentMouseup);
     }

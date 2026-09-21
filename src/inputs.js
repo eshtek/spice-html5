@@ -111,27 +111,7 @@ function handle_mousemove(e)
 {
     var sc = this.sc;
     release_vanished_buttons(sc, e.buttons);
-    if (sc && sc.inputs && sc.inputs.state === "ready")
-    {
-        var inputs = sc.inputs;
-        if (sc.coalesce_motion === false)
-        {
-            if (! send_motion(sc, e.offsetX, e.offsetY))
-                DEBUG > 0 && sc.log_info("Discarding mouse motion");
-        }
-        else
-        {
-            inputs.pending_motion = { x: e.offsetX, y: e.offsetY };
-            if (inputs.motion_frame === undefined)
-            {
-                /* Leading edge: nothing in this frame yet, so send now and
-                   let the frame pick up whatever follows. */
-                if (send_motion(sc, e.offsetX, e.offsetY))
-                    inputs.pending_motion = undefined;
-                schedule_motion_flush(sc);
-            }
-        }
-    }
+    pointer_move(sc, e.offsetX, e.offsetY);
 
     if (sc && sc.cursor && sc.cursor.spice_simulated_cursor)
     {
@@ -151,6 +131,29 @@ function handle_mousemove(e)
         e.preventDefault();
     }
 
+}
+
+/* The pointer is at x, y on the screen element, whatever moved it. */
+function pointer_move(sc, x, y)
+{
+    if (! (sc && sc.inputs && sc.inputs.state === "ready"))
+        return;
+    var inputs = sc.inputs;
+    if (sc.coalesce_motion === false)
+    {
+        if (! send_motion(sc, x, y))
+            DEBUG > 0 && sc.log_info("Discarding mouse motion");
+        return;
+    }
+    inputs.pending_motion = { x: x, y: y };
+    if (inputs.motion_frame === undefined)
+    {
+        /* Leading edge: nothing in this frame yet, so send now and
+           let the frame pick up whatever follows. */
+        if (send_motion(sc, x, y))
+            inputs.pending_motion = undefined;
+        schedule_motion_flush(sc);
+    }
 }
 
 /* One position or motion message, if the ack window allows it. Only
@@ -227,15 +230,20 @@ function handle_mousedown(e)
 {
     if (this.sc)
         flush_motion(this.sc);
-    var press = new Messages.SpiceMsgcMousePress(e.button + 1, 1 << e.button);
-    if (this.sc && this.sc.inputs)
-        this.sc.inputs.buttons_state = press.buttons_state;
-    var msg = new Messages.SpiceMiniData();
-    msg.build_msg(Constants.SPICE_MSGC_INPUTS_MOUSE_PRESS, press);
-    if (this.sc && this.sc.inputs && this.sc.inputs.state === "ready")
-        this.sc.inputs.send_msg(msg);
+    send_press(this.sc, e.button + 1, 1 << e.button);
 
     e.preventDefault();
+}
+
+function send_press(sc, button, buttons_state)
+{
+    var press = new Messages.SpiceMsgcMousePress(button, buttons_state);
+    if (sc && sc.inputs)
+        sc.inputs.buttons_state = buttons_state;
+    var msg = new Messages.SpiceMiniData();
+    msg.build_msg(Constants.SPICE_MSGC_INPUTS_MOUSE_PRESS, press);
+    if (sc && sc.inputs && sc.inputs.state === "ready")
+        sc.inputs.send_msg(msg);
 }
 
 function handle_contextmenu(e)
@@ -325,27 +333,56 @@ function handle_mouseup(e)
 
 function handle_mousewheel(e)
 {
-    if (this.sc)
-        flush_motion(this.sc);
+    pointer_wheel(this.sc, e.deltaY < 0);
+
+    e.preventDefault();
+}
+
+/* One notch of the wheel, which SPICE carries as a button. */
+function pointer_wheel(sc, up)
+{
+    if (sc)
+        flush_motion(sc);
     var press = new Messages.SpiceMsgcMousePress;
     var release = new Messages.SpiceMsgcMouseRelease;
-    if (e.deltaY < 0)
-        press.button = release.button = Constants.SPICE_MOUSE_BUTTON_UP;
-    else
-        press.button = release.button = Constants.SPICE_MOUSE_BUTTON_DOWN;
+    press.button = release.button = up ? Constants.SPICE_MOUSE_BUTTON_UP : Constants.SPICE_MOUSE_BUTTON_DOWN;
     press.buttons_state = 0;
     release.buttons_state = 0;
 
     var msg = new Messages.SpiceMiniData();
     msg.build_msg(Constants.SPICE_MSGC_INPUTS_MOUSE_PRESS, press);
-    if (this.sc && this.sc.inputs && this.sc.inputs.state === "ready")
-        this.sc.inputs.send_msg(msg);
+    if (sc && sc.inputs && sc.inputs.state === "ready")
+        sc.inputs.send_msg(msg);
 
     msg.build_msg(Constants.SPICE_MSGC_INPUTS_MOUSE_RELEASE, release);
-    if (this.sc && this.sc.inputs && this.sc.inputs.state === "ready")
-        this.sc.inputs.send_msg(msg);
+    if (sc && sc.inputs && sc.inputs.state === "ready")
+        sc.inputs.send_msg(msg);
+}
 
-    e.preventDefault();
+/* A button going down or up with no DOM mouse event behind it, as a touch
+   gesture produces. button is a SPICE_MOUSE_BUTTON_*. */
+function button_mask(button)
+{
+    for (var i = 0; i < SPICE_BUTTON_OF_MASK.length; i++)
+        if (SPICE_BUTTON_OF_MASK[i][1] === button)
+            return SPICE_BUTTON_OF_MASK[i][0];
+    return 0;
+}
+
+function pointer_press(sc, button)
+{
+    if (! (sc && sc.inputs))
+        return;
+    flush_motion(sc);
+    send_press(sc, button, sc.inputs.buttons_state | button_mask(button));
+}
+
+function pointer_release(sc, button)
+{
+    if (! (sc && sc.inputs))
+        return;
+    flush_motion(sc);
+    send_release(sc, button, sc.inputs.buttons_state & ~button_mask(button));
 }
 
 function handle_keydown(e)
@@ -730,6 +767,37 @@ function typeText(sc, text, delay_ms)
     });
 }
 
+/* A key named as KeyboardEvent.code names it ("Backspace", "ArrowLeft",
+   "ControlLeft"), for a page with keys of its own to offer: a soft keyboard
+   reports no codes, and a phone has no Escape. False if the key is unknown
+   or the channel is down. */
+function sendKey(sc, code, down)
+{
+    var scancode = code_to_scancode[code];
+    if (! scancode || ! inputs_live(sc))
+        return false;
+    update_modifier(down, scancode, sc);
+    return true;
+}
+
+/* A press, and the release a moment later: see KEY_HOLD_MS. Resolves to
+   whether the key went out. */
+function tapKey(sc, code)
+{
+    return new Promise(function (resolve)
+    {
+        if (! sendKey(sc, code, true))
+        {
+            resolve(false);
+            return;
+        }
+        window.setTimeout(function ()
+        {
+            resolve(sendKey(sc, code, false));
+        }, KEY_HOLD_MS);
+    });
+}
+
 export {
   SpiceInputsConn,
   handle_mousemove,
@@ -742,4 +810,10 @@ export {
   handle_keyup,
   sendCtrlAltDel,
   typeText,
+  sendKey,
+  tapKey,
+  pointer_move,
+  pointer_press,
+  pointer_release,
+  pointer_wheel,
 };

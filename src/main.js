@@ -24,7 +24,7 @@ import { SpiceCursorConn } from './cursor.js';
 import { SpiceConn } from './spiceconn.js';
 import { DEBUG } from './utils.js';
 import { SpiceFileXferTask } from './filexfer.js';
-import { SpiceInputsConn, sendCtrlAltDel, typeText } from './inputs.js';
+import { SpiceInputsConn, sendCtrlAltDel, typeText, sendKey, tapKey } from './inputs.js';
 import { SpiceDisplayConn } from './display.js';
 import { SpicePlaybackConn } from './playback.js';
 import { SpiceRecordConn } from './record.js';
@@ -104,6 +104,26 @@ import { resize_helper, handle_resize } from './resize.js';
 **                                  lock key, so both sides agree.  On an
 **                                  Apple keyboard, which has no Num Lock,
 **                                  a keypad key turns the guest's on.
+**          touch_input (optional)  Default true: fingers on a touchscreen
+**                                  drive the guest's mouse (see touch.js).
+**                                  false leaves touches to the browser.
+**          touch_focus (optional)  Default true: a touch focuses the screen,
+**                                  as a click does.  A page holding focus in
+**                                  a field of its own, to keep a soft
+**                                  keyboard up, sets this false; it is read
+**                                  on every touch, so it can change live.
+**          touch_options (optional)  Overrides for the gesture thresholds
+**                                  in touch.js (slop_px, long_press_ms, ...).
+**          ontouchzoom (optional)  If given, two fingers moving apart or
+**                                  together are a pinch, reported as (ratio,
+**                                  clientX, clientY) for the page to zoom
+**                                  its view by; otherwise they scroll.
+**          ontouchpan  (optional)  Called with (dx, dy) in page pixels as a
+**                                  pinch drifts, and for two fingers moving
+**                                  together while touch_panning is true.
+**          touch_panning (optional)  True while the page's view is zoomed,
+**                                  so two fingers slide it rather than turn
+**                                  the guest's wheel.  Read on every move.
 **
 **  Throws error if there are troubles.  Requires a modern (by 2012 standards)
 **      browser, including WebSocket and WebSocket.binaryType == arraybuffer
@@ -857,4 +877,6 @@ export {
   handle_resize,
   sendCtrlAltDel,
   typeText,
+  sendKey,
+  tapKey,
 };
