@@ -322,6 +322,11 @@ SpiceCursorConn.prototype.show_cursor = function(shape)
 {
     var curstr = shape.curstr, pngstr = shape.pngstr, cursor = shape.cursor;
     var screen = document.getElementById(this.parent.screen_id);
+    /* Kept for a pointer drawn by hand, as a touchscreen's trackpad is. */
+    this.last_shape = shape;
+    this.shape_hidden = false;
+    if (this.parent.touch_pointer)
+        this.parent.touch_pointer.refresh();
     screen.style.cursor = 'auto';
     screen.style.cursor = curstr;
     /* Chromium and Firefox drop a cursor image over 128 px on a side
@@ -347,6 +352,9 @@ SpiceCursorConn.prototype.show_cursor = function(shape)
    or the mousemove handler would keep painting it. */
 SpiceCursorConn.prototype.hide_cursor = function()
 {
+    this.shape_hidden = true;
+    if (this.parent.touch_pointer)
+        this.parent.touch_pointer.refresh();
     document.getElementById(this.parent.screen_id).style.cursor = "none";
     this.remove_simulated_cursor();
 }

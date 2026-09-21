@@ -1,13 +1,13 @@
 /* The touch recogniser under a hand-driven clock: what each gesture turns
    into, and that nothing it presses is ever left held. */
 import { describe, expect, test } from "bun:test";
-import { TouchGestures } from "../../src/touch.js";
+import { TouchGestures, pointer_gain } from "../../src/touch.js";
 
 const LEFT = 1;
 const MIDDLE = 2;
 const RIGHT = 3;
 
-type Extra = { zoom?: boolean; panning?: () => boolean };
+type Extra = { zoom?: boolean; panning?: () => boolean; trackpad?: boolean };
 
 function harness(options?: Record<string, number>, extra: Extra = {}) {
   let now = 0;
@@ -28,6 +28,7 @@ function harness(options?: Record<string, number>, extra: Extra = {}) {
     release: (b: number) => out.push(["release", b]),
     wheel: (up: boolean) => out.push(["wheel", up ? "up" : "down"]),
     pan: (dx: number, dy: number) => out.push(["pan", dx, dy]),
+    ...(extra.trackpad ? { trackpad: () => true, nudge: (dx: number, dy: number) => out.push(["nudge", dx, dy]) } : {}),
     ...(extra.panning ? { panning: extra.panning } : {}),
     ...(extra.zoom ? { zoom: (ratio: number, cx: number, cy: number) => out.push(["zoom", Math.round(ratio * 1000) / 1000, cx, cy]) } : {}),
   };
@@ -319,5 +320,102 @@ describe("a page that zooms", () => {
     h.move(1, 60, 100, 30);
     h.move(2, 240, 100, 40);
     expect(h.out).toEqual([]);
+  });
+});
+
+describe("trackpad mode", () => {
+  const pad = () => harness(undefined, { trackpad: true });
+
+  test("a moving finger moves the pointer by its own travel and presses nothing", () => {
+    const h = pad();
+    h.down(1, 300, 300, 0, 100, 100);
+    h.move(1, 300, 300, 20, 112, 100);
+    h.move(1, 300, 300, 40, 120, 106);
+    h.up(1, 300, 300, 60);
+    expect(h.out).toEqual([["nudge", 12, 0], ["nudge", 8, 6]]);
+  });
+
+  test("the travel that proved a touch a move is not replayed as one jump", () => {
+    const h = pad();
+    h.down(1, 0, 0, 0, 100, 100);
+    h.move(1, 0, 0, 10, 104, 100);
+    h.move(1, 0, 0, 20, 108, 100);
+    h.move(1, 0, 0, 30, 112, 100);
+    expect(h.out).toEqual([["nudge", 4, 0]]);
+  });
+
+  test("a tap clicks where the pointer stands, not where the finger fell", () => {
+    const h = pad();
+    h.down(1, 300, 300, 0);
+    h.up(1, 300, 300, 50);
+    expect(h.out).toEqual([["press", LEFT], ["release", LEFT]]);
+  });
+
+  test("two taps are two clicks on the same spot, as a double click needs", () => {
+    const h = pad();
+    h.down(1, 10, 10, 0);
+    h.up(1, 10, 10, 50);
+    h.down(2, 200, 200, 150);
+    h.up(2, 200, 200, 200);
+    expect(h.out).toEqual([["press", LEFT], ["release", LEFT], ["press", LEFT], ["release", LEFT]]);
+  });
+
+  test("a finger that moves right after a tap drags", () => {
+    const h = pad();
+    h.down(1, 0, 0, 0, 100, 100);
+    h.up(1, 0, 0, 50);
+    h.down(2, 0, 0, 150, 100, 100);
+    h.move(2, 0, 0, 170, 120, 100);
+    h.move(2, 0, 0, 190, 140, 110);
+    h.up(2, 0, 0, 210);
+    expect(h.out.slice(2)).toEqual([["press", LEFT], ["nudge", 20, 0], ["nudge", 20, 10], ["release", LEFT]]);
+  });
+
+  test("a finger that moves long after a tap only points", () => {
+    const h = pad();
+    h.down(1, 0, 0, 0, 100, 100);
+    h.up(1, 0, 0, 50);
+    h.down(2, 0, 0, 900, 100, 100);
+    h.move(2, 0, 0, 920, 120, 100);
+    h.up(2, 0, 0, 940);
+    expect(h.out.slice(2)).toEqual([["nudge", 20, 0]]);
+  });
+
+  test("a long press and a two finger tap right-click where the pointer stands", () => {
+    const h = pad();
+    h.down(1, 50, 50, 0);
+    h.at(600);
+    h.up(1, 50, 50, 700);
+    h.down(2, 100, 100, 1000);
+    h.down(3, 140, 100, 1010);
+    h.up(2, 100, 100, 1080);
+    h.up(3, 140, 100, 1090);
+    expect(h.out).toEqual([["press", RIGHT], ["release", RIGHT], ["press", RIGHT], ["release", RIGHT]]);
+  });
+
+  test("two fingers still scroll", () => {
+    const h = pad();
+    h.down(1, 100, 100, 0);
+    h.down(2, 140, 100, 10);
+    h.move(1, 100, 150, 30);
+    h.move(2, 140, 150, 40);
+    expect(h.out).toEqual([["wheel", "up"], ["wheel", "up"]]);
+  });
+
+  test("a second finger landing mid-drag lets the button go", () => {
+    const h = pad();
+    h.down(1, 0, 0, 0, 100, 100);
+    h.up(1, 0, 0, 50);
+    h.down(2, 0, 0, 150, 100, 100);
+    h.move(2, 0, 0, 170, 130, 100);
+    h.down(3, 0, 0, 190, 200, 100);
+    expect(held(h.out)).toEqual([]);
+  });
+
+  test("the pointer keeps pace with a slow finger and runs ahead of a fast one", () => {
+    expect(pointer_gain(1)).toBe(1);
+    expect(pointer_gain(4)).toBe(1);
+    expect(pointer_gain(10)).toBeGreaterThan(1.5);
+    expect(pointer_gain(200)).toBe(2.5);
   });
 });
