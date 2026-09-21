@@ -24,7 +24,7 @@ import { SpiceCursorConn } from './cursor.js';
 import { SpiceConn } from './spiceconn.js';
 import { DEBUG } from './utils.js';
 import { SpiceFileXferTask } from './filexfer.js';
-import { SpiceInputsConn, sendCtrlAltDel, typeText, sendKey, tapKey } from './inputs.js';
+import { SpiceInputsConn, sendCtrlAltDel, typeText, sendKey, tapKey, keyForChar } from './inputs.js';
 import { SpiceDisplayConn } from './display.js';
 import { SpicePlaybackConn } from './playback.js';
 import { SpiceRecordConn } from './record.js';
@@ -879,4 +879,5 @@ export {
   typeText,
   sendKey,
   tapKey,
+  keyForChar,
 };

@@ -89,6 +89,20 @@ test("tapKey presses and releases a key by its code, extended keys with the brea
   ]);
 });
 
+test("keyForChar names the US key behind a character", async ({ client }) => {
+  const keys = await client.page.evaluate(() => {
+    const h = (window as unknown as { harness: { keyForChar: (ch: string) => unknown } }).harness;
+    return ["c", "C", "!", "\n", "é"].map((ch) => h.keyForChar(ch));
+  });
+  expect(keys).toEqual([
+    { code: "KeyC", shift: false },
+    { code: "KeyC", shift: true },
+    { code: "Digit1", shift: true },
+    { code: "Enter", shift: false },
+    null,
+  ]);
+});
+
 test("typeText holds each key and wraps shifted characters", async ({ client, spice }) => {
   const before = await spice.mark();
   const result = await client.typeText("Hi!", 20);
