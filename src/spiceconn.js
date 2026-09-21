@@ -114,6 +114,18 @@ function SpiceConn(o)
         this.onmodifiers = o.onmodifiers;
     if (o.sync_lock_keys !== undefined)
         this.sync_lock_keys = o.sync_lock_keys;
+    if (o.touch_input !== undefined)
+        this.touch_input = o.touch_input;
+    if (o.touch_focus !== undefined)
+        this.touch_focus = o.touch_focus;
+    if (o.touch_options !== undefined)
+        this.touch_options = o.touch_options;
+    if (o.ontouchzoom !== undefined)
+        this.ontouchzoom = o.ontouchzoom;
+    if (o.ontouchpan !== undefined)
+        this.ontouchpan = o.ontouchpan;
+    if (o.touch_panning !== undefined)
+        this.touch_panning = o.touch_panning;
 
     this.set_state("connecting");
     this.ws.parent = this;
