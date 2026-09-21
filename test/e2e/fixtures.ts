@@ -416,6 +416,10 @@ export class SpiceClient {
       [text, delay] as const,
     );
   }
+
+  tapKey(code: string) {
+    return this.page.evaluate((c) => (window as unknown as { harness: { tapKey: (c: string) => Promise<boolean> } }).harness.tapKey(c), code);
+  }
 }
 
 export const test = base.extend<{ client: SpiceClient; spice: SpiceControl }, { server: SpiceControl }>({

@@ -99,6 +99,7 @@ const h = {
   },
   sendCtrlAltDel() { Spice.sendCtrlAltDel(h.sc); },
   typeText(text, delay) { return Spice.typeText(h.sc, text, delay); },
+  tapKey(code) { return Spice.tapKey(h.sc, code); },
   messages() {
     return Array.from(document.querySelectorAll('#message-div > *')).map((n) => n.textContent);
   },

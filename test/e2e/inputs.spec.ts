@@ -75,6 +75,20 @@ test("sendCtrlAltDel presses and releases the whole chord", async ({ client, spi
   ]);
 });
 
+test("tapKey presses and releases a key by its code, extended keys with the break bit in the second byte", async ({ client, spice }) => {
+  const before = await spice.mark();
+  expect(await client.tapKey("ArrowLeft")).toBe(true);
+  expect(await client.tapKey("Backspace")).toBe(true);
+  expect(await client.tapKey("NoSuchKey")).toBe(false);
+  const keys = (await spice.inbound("inputs", "*", before)).filter((r) => r.name.startsWith("key_")).map((r) => [r.name, r.fields.code]);
+  expect(keys).toEqual([
+    ["key_down", 0x4be0],
+    ["key_up", 0xcbe0],
+    ["key_down", 0x0e],
+    ["key_up", 0x8e],
+  ]);
+});
+
 test("typeText holds each key and wraps shifted characters", async ({ client, spice }) => {
   const before = await spice.mark();
   const result = await client.typeText("Hi!", 20);

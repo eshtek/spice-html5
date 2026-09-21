@@ -767,6 +767,37 @@ function typeText(sc, text, delay_ms)
     });
 }
 
+/* A key named as KeyboardEvent.code names it ("Backspace", "ArrowLeft",
+   "ControlLeft"), for a page with keys of its own to offer: a soft keyboard
+   reports no codes, and a phone has no Escape. False if the key is unknown
+   or the channel is down. */
+function sendKey(sc, code, down)
+{
+    var scancode = code_to_scancode[code];
+    if (! scancode || ! inputs_live(sc))
+        return false;
+    update_modifier(down, scancode, sc);
+    return true;
+}
+
+/* A press, and the release a moment later: see KEY_HOLD_MS. Resolves to
+   whether the key went out. */
+function tapKey(sc, code)
+{
+    return new Promise(function (resolve)
+    {
+        if (! sendKey(sc, code, true))
+        {
+            resolve(false);
+            return;
+        }
+        window.setTimeout(function ()
+        {
+            resolve(sendKey(sc, code, false));
+        }, KEY_HOLD_MS);
+    });
+}
+
 export {
   SpiceInputsConn,
   handle_mousemove,
@@ -779,6 +810,8 @@ export {
   handle_keyup,
   sendCtrlAltDel,
   typeText,
+  sendKey,
+  tapKey,
   pointer_move,
   pointer_press,
   pointer_release,
