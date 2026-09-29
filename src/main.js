@@ -83,7 +83,10 @@ import { resize_helper, handle_resize } from './resize.js';
 **          disable_effects (optional)  Guest desktop effects to turn off
 **                                  through the agent, any of "wallpaper",
 **                                  "font-smooth", "animation"; fewer
-**                                  pixels change, so less to send.
+**                                  pixels change, so less to send.  Sent
+**                                  whenever given, even empty: the Windows
+**                                  agent keeps what the last viewer turned
+**                                  off, so [] brings the effects back.
 **          color_depth (optional)  Colour depth to ask the guest desktop
 **                                  for through the agent, e.g. 16.
 **          coalesce_motion (optional)  Default true: mouse motion is sent
@@ -539,7 +542,10 @@ SpiceMainConn.prototype.send_display_config = function()
     }
     if (this.color_depth)
         flags |= Constants.VD_AGENT_DISPLAY_CONFIG_FLAG_SET_COLOR_DEPTH;
-    if (! flags)
+    /* Nothing asked for, nothing sent.  An empty list is still a request:
+       the Windows agent keeps the effects the last viewer turned off, even
+       after that viewer disconnects, until a config without them arrives. */
+    if (! flags && this.disable_effects === undefined)
         return;
     this.send_agent_message(Constants.VD_AGENT_DISPLAY_CONFIG,
                             new Messages.VDAgentDisplayConfig(flags, this.color_depth || 0));

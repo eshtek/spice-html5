@@ -29,6 +29,15 @@ test.describe("display config", () => {
     expect(config?.fields).toMatchObject({ flags: 0b100, depth: 0 });
   });
 
+  test("an empty list is still sent, with no flags: that is how the effects come back", async ({ client, spice }) => {
+    /* The Windows agent keeps what the last viewer turned off, even after it
+       disconnects, until a config without those flags arrives. */
+    await client.connectReady({ disable_effects: [] });
+    await spice.send("main", "agentAnnounceCapabilities", { caps: DISPLAY_CONFIG_CAP, request: 0 });
+    const config = (await spice.waitFor("main", "agent_data", 2)).find((m) => m.fields.agentType === 5);
+    expect(config?.fields).toMatchObject({ flags: 0, depth: 0 });
+  });
+
   test("is not sent when nothing was asked for", async ({ client, spice }) => {
     await client.connectReady();
     await spice.send("main", "agentAnnounceCapabilities", { caps: DISPLAY_CONFIG_CAP, request: 1 });
