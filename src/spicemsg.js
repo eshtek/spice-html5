@@ -756,6 +756,18 @@ VDAgentFileXferStatusMessage.prototype =
         var dv = new DataView(a);
         this.id = dv.getUint32(at, true); at += 4;
         this.result = dv.getUint32(at, true); at += 4;
+        /* The detail a detailed result may carry: the guest's free space
+           (u64), or a packed VDAgentFileXferStatusError, a u8 error type and
+           a u32 code. */
+        if (this.result == Constants.VD_AGENT_FILE_XFER_STATUS_NOT_ENOUGH_SPACE && a.byteLength >= at + 8)
+        {
+            this.disk_free_space = Number(dv.getBigUint64(at, true)); at += 8;
+        }
+        else if (this.result == Constants.VD_AGENT_FILE_XFER_STATUS_ERROR && a.byteLength >= at + 5)
+        {
+            this.error_type = dv.getUint8(at); at += 1;
+            this.error_code = dv.getUint32(at, true); at += 4;
+        }
         return at;
     },
     buffer_size: function()
@@ -764,10 +776,23 @@ VDAgentFileXferStatusMessage.prototype =
     }
 }
 
+/* A key file value, as GKeyFile on a Linux guest reads it back: a
+   backslash starts an escape there, and a line break would end the
+   value.  The Windows agent reads the raw line and refuses a name with
+   a backslash in it either way. */
+function key_file_value(value)
+{
+    return String(value).replace(/\\/g, "\\\\").replace(/[\r\n]/g, " ");
+}
+
 function VDAgentFileXferStartMessage(id, name, size)
 {
     this.id = id;
-    this.string = "[vdagent-file-xfer]\n"+"name="+name+"\nsize="+size+"\n";
+    /* UTF-8: both agents decode the name as UTF-8, so a name sent a
+       byte per UTF-16 unit arrived garbled past ASCII. */
+    this.bytes = new TextEncoder().encode("[vdagent-file-xfer]\n" +
+                                          "name=" + key_file_value(name) + "\n" +
+                                          "size=" + size + "\n");
 }
 
 VDAgentFileXferStartMessage.prototype =
@@ -777,12 +802,12 @@ VDAgentFileXferStartMessage.prototype =
         at = at || 0;
         var dv = new DataView(a);
         dv.setUint32(at, this.id, true); at += 4;
-        for (var i = 0; i < this.string.length; i++, at++)
-            dv.setUint8(at, this.string.charCodeAt(i));
+        new Uint8Array(a, at, this.bytes.length).set(this.bytes); at += this.bytes.length;
+        dv.setUint8(at, 0);
     },
     buffer_size: function()
     {
-        return 4 + this.string.length + 1;
+        return 4 + this.bytes.length + 1;
     }
 }
 

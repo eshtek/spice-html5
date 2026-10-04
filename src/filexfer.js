@@ -56,7 +56,9 @@ SpiceFileXferTask.prototype.create_progressbar = function()
 
 SpiceFileXferTask.prototype.update_progressbar = function(value)
 {
-    this.progressbar.setAttribute('value', value);
+    /* None to update when the page draws its own (onfilexfer). */
+    if (this.progressbar)
+        this.progressbar.setAttribute('value', value);
 }
 
 SpiceFileXferTask.prototype.remove_progressbar = function()
@@ -75,16 +77,31 @@ function handle_file_dragover(e)
 function handle_file_drop(e)
 {
     var sc = window.spice_connection;
+    var items = e.dataTransfer.items;
     var files = e.dataTransfer.files;
 
     e.stopPropagation();
     e.preventDefault();
-    for (var i = files.length - 1; i >= 0; i--)
+    /* A folder cannot be sent, so it is skipped by what it is.  Skipping
+       by an empty MIME type also dropped every file of a type the
+       browser does not know. */
+    if (items && items.length && typeof items[0].webkitGetAsEntry === 'function')
     {
-        if (files[i].type) // do not copy a directory
-            sc.file_xfer_start(files[i]);
+        for (var i = items.length - 1; i >= 0; i--)
+        {
+            if (items[i].kind !== 'file')
+                continue;
+            var entry = items[i].webkitGetAsEntry();
+            if (entry && entry.isDirectory)
+                continue;
+            var file = items[i].getAsFile();
+            if (file)
+                sc.file_xfer_start(file);
+        }
+        return;
     }
-
+    for (var j = files.length - 1; j >= 0; j--)
+        sc.file_xfer_start(files[j]);
 }
 
 export {

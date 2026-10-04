@@ -98,6 +98,8 @@ function SpiceConn(o)
         this.onsuccess = o.onsuccess;
     if (o.onagent !== undefined)
         this.onagent = o.onagent;
+    if (o.onfilexfer !== undefined)
+        this.onfilexfer = o.onfilexfer;
     if (o.preferred_compression !== undefined)
         this.preferred_compression = o.preferred_compression;
     if (o.onvolume !== undefined)
