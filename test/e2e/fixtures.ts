@@ -178,6 +178,19 @@ export interface ConnectOptions {
   preopen?: boolean;
   factory?: boolean;
   omitUri?: boolean;
+  /* Report file transfers to harness.xfers instead of stock progress bars. */
+  filexfer?: boolean;
+}
+
+export interface FileXferEvent {
+  id: number;
+  name: string;
+  size: number;
+  sent: number;
+  state: "progress" | "done" | "failed" | "cancelled";
+  reason?: string;
+  free_space?: number;
+  error_code?: number;
 }
 
 export interface StateEvent {
@@ -278,6 +291,28 @@ export class SpiceClient {
 
   states() {
     return this.page.evaluate(() => (window as unknown as { harness: { states: StateEvent[] } }).harness.states);
+  }
+
+  xfers() {
+    return this.page.evaluate(() => (window as unknown as { harness: { xfers: FileXferEvent[] } }).harness.xfers);
+  }
+
+  /* Starts a transfer of `size` zero bytes under `name`; resolves with its id. */
+  sendFile(name: string, size: number) {
+    return this.page.evaluate(
+      ([n, s]) => (window as unknown as { harness: { sendFile: (n: string, s: number) => number } }).harness.sendFile(n, s),
+      [name, size] as const,
+    );
+  }
+
+  /* Cancel the transfer from inside its first progress report: the moment
+     the client has already started reading the next chunk. */
+  cancelOnProgress(id: number) {
+    return this.page.evaluate((i) => { (window as unknown as { harness: { cancelOnProgress: number } }).harness.cancelOnProgress = i; }, id);
+  }
+
+  cancelFile(id: number) {
+    return this.page.evaluate((i) => (window as unknown as { harness: { cancelFile: (i: number) => boolean } }).harness.cancelFile(i), id);
   }
 
   modifiers() {
