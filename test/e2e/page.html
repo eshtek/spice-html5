@@ -34,6 +34,7 @@ const h = {
   states: [],
   modifiers: [],
   factoryCalls: [],
+  xfers: [],
   connect(opts) {
     const uri = opts.uri || ('ws://' + location.host + '/spice');
     /* preopen: hand the client a socket this page opened and waited for;
@@ -69,6 +70,7 @@ const h = {
           onstate(s) { h.states.push(s); },
           onmodifiers(m) { h.modifiers.push(m); },
           sync_lock_keys: opts.sync_lock_keys,
+          onfilexfer: opts.filexfer ? (e) => { h.xfers.push(e); if (e.state === 'progress' && h.cancelOnProgress === e.id) h.sc.file_xfer_cancel(e.id); } : undefined,
         });
         window.spice_connection = h.sc;
       } catch (e) {
@@ -101,6 +103,8 @@ const h = {
   typeText(text, delay) { return Spice.typeText(h.sc, text, delay); },
   tapKey(code) { return Spice.tapKey(h.sc, code); },
   keyForChar(ch) { return Spice.keyForChar(ch) || null; },
+  sendFile(name, size) { return h.sc.file_xfer_start(new File([new Uint8Array(size)], name)); },
+  cancelFile(id) { return h.sc.file_xfer_cancel(id); },
   messages() {
     return Array.from(document.querySelectorAll('#message-div > *')).map((n) => n.textContent);
   },

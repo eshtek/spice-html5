@@ -94,6 +94,16 @@ export function agentAnnounceCapabilities(caps: number, request = 0) {
   return agentData(C.VD_AGENT_ANNOUNCE_CAPABILITIES, new Writer().u32(request).u32(caps).toBytes());
 }
 
+/* VDAgentFileXferStatusMessage: id + result, then whatever detail a
+   detailed result carries: the guest's free space (u64), or a packed
+   VDAgentFileXferStatusError, a u8 error type and a u32 code (5 bytes). */
+export function agentFileXferStatus(a: { id: number; result: number; freeSpace?: number; errorType?: number; errorCode?: number }) {
+  const w = new Writer().u32(a.id).u32(a.result);
+  if (a.freeSpace !== undefined) w.u64(a.freeSpace);
+  if (a.errorCode !== undefined) w.u8(a.errorType ?? 0).u32(a.errorCode);
+  return agentData(C.VD_AGENT_FILE_XFER_STATUS, w.toBytes());
+}
+
 /* ---------- display ---------- */
 
 function displayBase(w: Writer, surface: number, box: Rect, clip: Clip) {
@@ -869,6 +879,27 @@ export function decodeClient(channelType: number, type: number, data: Uint8Array
         const a = new Reader(Uint8Array.from(payload));
         fields.flags = a.u32();
         fields.depth = a.u32();
+      }
+      if (fields.agentType === C.VD_AGENT_FILE_XFER_START && payload.length >= 4) {
+        const bytes = Uint8Array.from(payload);
+        fields.xferId = new Reader(bytes).u32();
+        const end = bytes.indexOf(0, 4);
+        fields.keyfile = new TextDecoder().decode(bytes.subarray(4, end < 0 ? undefined : end));
+        const value = (key: string) => (fields.keyfile as string).match(new RegExp(`^${key}=(.*)$`, "m"))?.[1];
+        fields.name = value("name");
+        fields.fileSize = Number(value("size"));
+      }
+      if (fields.agentType === C.VD_AGENT_FILE_XFER_STATUS && payload.length >= 8) {
+        const a = new Reader(Uint8Array.from(payload));
+        fields.xferId = a.u32();
+        fields.result = a.u32();
+      }
+      /* Only the head of a data message is in this chunk; its size field
+         says how many bytes it carries in all. */
+      if (fields.agentType === C.VD_AGENT_FILE_XFER_DATA && payload.length >= 12) {
+        const a = new Reader(Uint8Array.from(payload));
+        fields.xferId = a.u32();
+        fields.xferSize = Number(a.u64());
       }
       break;
     case "agent_token":

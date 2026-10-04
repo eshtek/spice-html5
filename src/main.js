@@ -67,6 +67,17 @@ import { resize_helper, handle_resize } from './resize.js';
 **          onagent     (optional)  If given, a function to be called when
 **                                  a VD agent is connected; a good opportunity
 **                                  to request a resize
+**          onfilexfer  (optional)  If given, file transfers report to it
+**                                  instead of drawing the stock progress
+**                                  bars: { id, name, size, sent, state }
+**                                  where state is progress, done, failed
+**                                  or cancelled.  A failure adds reason:
+**                                  no-space (with free_space), locked,
+**                                  no-session, disabled, invalid-name,
+**                                  cancelled-by-guest, agent-gone,
+**                                  disconnected, unreadable (the browser
+**                                  could not read the file) or error (with
+**                                  error_code when the agent sent one).
 **          onsuccess   (optional)  If given, a function to be called when the
 **                                  session is successfully connected
 **          preferred_compression (optional)  Image compression to ask the
@@ -150,6 +161,13 @@ function SpiceMainConn()
     this.file_xfer_read_queue = [];
     this.ports = [];
     this.agent_caps = [0]
+
+    /* A main socket that closes on its own ends every transfer with it, as
+       stop() does: otherwise a page that keeps the connection object never
+       hears how its transfers ended. */
+    var _this = this;
+    if (this.ws)
+        this.ws.addEventListener('close', function () { _this.abort_file_xfers(); });
 
     /* Capturing, because the console's own key handling stops plenty
        of events from reaching the document. */
@@ -323,7 +341,7 @@ SpiceMainConn.prototype.process_channel_message = function(msg)
         this.file_xfer_read_queue = [];
         for (var task_id in this.file_xfer_tasks)
             this.file_xfer_completed(this.file_xfer_tasks[task_id],
-                new Error("Agent disconnected; file transfer aborted."));
+                new Error("Agent disconnected; file transfer aborted."), "agent-gone");
         return true;
     }
 
@@ -513,7 +531,8 @@ SpiceMainConn.prototype.announce_agent_capabilities = function(request)
                                                         (1 << Constants.VD_AGENT_CAP_REPLY) |
                                                         (1 << Constants.VD_AGENT_CAP_CLIPBOARD_SELECTION) |
                                                         (1 << Constants.VD_AGENT_CAP_CLIPBOARD_BY_DEMAND) |
-                                                        (1 << Constants.VD_AGENT_CAP_AUDIO_VOLUME_SYNC));
+                                                        (1 << Constants.VD_AGENT_CAP_AUDIO_VOLUME_SYNC) |
+                                                        (1 << Constants.VD_AGENT_CAP_FILE_XFER_DETAILED_ERRORS));
     this.send_agent_message(Constants.VD_AGENT_ANNOUNCE_CAPABILITIES, caps);
 }
 
@@ -583,15 +602,47 @@ SpiceMainConn.prototype.file_xfer_start = function(file)
 
     task_id = this.file_xfer_task_id++;
     task = new SpiceFileXferTask(task_id, file);
-    task.create_progressbar();
+    if (!this.onfilexfer)
+        task.create_progressbar();
     this.file_xfer_tasks[task_id] = task;
     xfer_start = new Messages.VDAgentFileXferStartMessage(task_id, file.name, file.size);
     this.send_agent_message(Constants.VD_AGENT_FILE_XFER_START, xfer_start);
+    return task_id;
+}
+
+/* Stop a transfer from this side.  The agent is told at once, whether
+   the transfer is waiting for its go-ahead, between chunks or queued
+   for agent tokens; a chunk already being read is dropped when it lands. */
+SpiceMainConn.prototype.file_xfer_cancel = function(task_id)
+{
+    var task = this.file_xfer_tasks[task_id];
+    if (!task)
+        return false;
+    var xfer_status = new Messages.VDAgentFileXferStatusMessage(task.id,
+                                                       Constants.VD_AGENT_FILE_XFER_STATUS_CANCELLED);
+    this.send_agent_message(Constants.VD_AGENT_FILE_XFER_STATUS, xfer_status);
+    task.cancelled = true;
+    task.remove_progressbar();
+    delete this.file_xfer_tasks[task.id];
+    this.report_file_xfer(task, "cancelled");
+    return true;
+}
+
+SpiceMainConn.prototype.report_file_xfer = function(task, state, extra)
+{
+    if (!this.onfilexfer)
+        return;
+    var event = { id: task.id, name: task.file.name, size: task.file.size,
+                  sent: task.sent || 0, state: state };
+    for (var key in extra)
+        event[key] = extra[key];
+    try { this.onfilexfer(event); }
+    catch (e) { this.log_err("onfilexfer threw: " + e); }
 }
 
 SpiceMainConn.prototype.handle_file_xfer_status = function(file_xfer_status)
 {
-    var xfer_error, xfer_task;
+    var xfer_error, xfer_task, reason, detail = {};
     if (!this.file_xfer_tasks[file_xfer_status.id])
     {
         return;
@@ -604,18 +655,44 @@ SpiceMainConn.prototype.handle_file_xfer_status = function(file_xfer_status)
             return;
         case Constants.VD_AGENT_FILE_XFER_STATUS_CANCELLED:
             xfer_error = "transfer is cancelled by spice agent";
+            reason = "cancelled-by-guest";
             break;
         case Constants.VD_AGENT_FILE_XFER_STATUS_ERROR:
             xfer_error = "some errors occurred in the spice agent";
+            reason = "error";
+            if (file_xfer_status.error_type == Constants.VD_AGENT_FILE_XFER_STATUS_ERROR_GLIB_IO &&
+                file_xfer_status.error_code == Constants.G_IO_ERROR_INVALID_FILENAME)
+                reason = "invalid-name";
+            else if (file_xfer_status.error_code !== undefined)
+                detail.error_code = file_xfer_status.error_code;
+            break;
+        case Constants.VD_AGENT_FILE_XFER_STATUS_NOT_ENOUGH_SPACE:
+            xfer_error = "not enough free space in the guest";
+            reason = "no-space";
+            if (file_xfer_status.disk_free_space !== undefined)
+                detail.free_space = file_xfer_status.disk_free_space;
+            break;
+        case Constants.VD_AGENT_FILE_XFER_STATUS_SESSION_LOCKED:
+            xfer_error = "the guest's session is locked";
+            reason = "locked";
+            break;
+        case Constants.VD_AGENT_FILE_XFER_STATUS_VDAGENT_NOT_CONNECTED:
+            xfer_error = "no agent is running in the guest's session";
+            reason = "no-session";
+            break;
+        case Constants.VD_AGENT_FILE_XFER_STATUS_DISABLED:
+            xfer_error = "file transfer is disabled in the guest";
+            reason = "disabled";
             break;
         case Constants.VD_AGENT_FILE_XFER_STATUS_SUCCESS:
             break;
         default:
             xfer_error = "unhandled status type: " + file_xfer_status.result;
+            reason = "error";
             break;
     }
 
-    this.file_xfer_completed(xfer_task, xfer_error)
+    this.file_xfer_completed(xfer_task, xfer_error, reason, detail)
 }
 
 SpiceMainConn.prototype.file_xfer_read = function(file_xfer_task, start_byte)
@@ -654,6 +731,9 @@ SpiceMainConn.prototype.file_xfer_read = function(file_xfer_task, start_byte)
     reader = new FileReader();
     reader.onload = function(e)
     {
+        /* Cancelled, failed or disconnected while this chunk was read. */
+        if (_this.file_xfer_tasks[file_xfer_task.id] !== file_xfer_task)
+            return;
         var xfer_data = new Messages.VDAgentFileXferDataMessage(file_xfer_task.id,
                                                        e.target.result.byteLength,
                                                        e.target.result);
@@ -664,14 +744,29 @@ SpiceMainConn.prototype.file_xfer_read = function(file_xfer_task, start_byte)
            agent token per iteration. */
         if (eb < file_xfer_task.file.size)
             _this.file_xfer_read(file_xfer_task, eb);
+        file_xfer_task.sent = eb;
         file_xfer_task.update_progressbar(eb);
+        _this.report_file_xfer(file_xfer_task, "progress");
+    };
+
+    /* A file that went away after it was picked, or a folder from a browser
+       that cannot tell one from a file: the agent drops what it wrote. */
+    reader.onerror = function()
+    {
+        if (_this.file_xfer_tasks[file_xfer_task.id] !== file_xfer_task)
+            return;
+        var xfer_status = new Messages.VDAgentFileXferStatusMessage(file_xfer_task.id,
+                                                           Constants.VD_AGENT_FILE_XFER_STATUS_CANCELLED);
+        _this.send_agent_message(Constants.VD_AGENT_FILE_XFER_STATUS, xfer_status);
+        _this.file_xfer_completed(file_xfer_task,
+            new Error("could not read '" + file_xfer_task.file.name + "'"), "unreadable");
     };
 
     slice = file_xfer_task.file.slice(sb, eb);
     reader.readAsArrayBuffer(slice);
 }
 
-SpiceMainConn.prototype.file_xfer_completed = function(file_xfer_task, error)
+SpiceMainConn.prototype.file_xfer_completed = function(file_xfer_task, error, reason, detail)
 {
     if (error)
         this.log_err(error);
@@ -681,6 +776,16 @@ SpiceMainConn.prototype.file_xfer_completed = function(file_xfer_task, error)
     file_xfer_task.remove_progressbar();
 
     delete this.file_xfer_tasks[file_xfer_task.id];
+
+    if (error)
+    {
+        var extra = { reason: reason || "error" };
+        for (var key in detail)
+            extra[key] = detail[key];
+        this.report_file_xfer(file_xfer_task, "failed", extra);
+    }
+    else
+        this.report_file_xfer(file_xfer_task, "done");
 }
 
 /* The guest agent sends more than this client acts on -- a reply
@@ -806,9 +911,22 @@ SpiceMainConn.prototype.remove_paste_listener = function()
     this.paste_listener = undefined;
 }
 
+/* Transfers end with the connection: a chunk still being read would
+   otherwise land after the socket is gone and throw sending it. */
+SpiceMainConn.prototype.abort_file_xfers = function()
+{
+    this.agent_connected = false;
+    this.agent_msg_queue = [];
+    this.file_xfer_read_queue = [];
+    for (var task_id in this.file_xfer_tasks)
+        this.file_xfer_completed(this.file_xfer_tasks[task_id],
+            new Error("Connection closed; file transfer aborted."), "disconnected");
+}
+
 SpiceMainConn.prototype.cleanup = function()
 {
     this.remove_paste_listener();
+    this.abort_file_xfers();
     SpiceConn.prototype.cleanup.call(this);
 }
 
